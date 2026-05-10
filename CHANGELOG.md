@@ -4,6 +4,16 @@ All notable changes to `meshbook-cli` are documented here. The format follows [K
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-05-10
+
+### Fixed
+- **`mesh login` no longer persists invalid tokens.** Previously the token was written to `~/.meshbook/config` *before* `/api/me` verification, so an invalid `--token` left a dead credential on disk. Now the token is verified against the API in-memory first; only on success does it land on disk. Also detects the "200 + `authenticated:false`" shape `/api/me` returns for invalid bearers (it doesn't 401 — that's a SPA-friendly contract). Bug surfaced by Rook 2026-05-10 during their full CLI E2E walk.
+- **`mesh login` on non-TTY (piped stdin / CI / no terminal) no longer hangs.** `getpass.getpass()` blocks forever on Windows when stdin is a pipe with no `/dev/tty` fallback. Now we detect `sys.stdin.isatty()` and fall through to a plain `sys.stdin.readline()` with a "(input will echo — non-TTY mode)" warning. Same bug.
+- **Config dir resolution is now overridable.** Honour `MESHBOOK_CONFIG_DIR` env var (Pi users with read-only `$HOME` mounts), then `XDG_CONFIG_HOME` if exported, then the legacy `~/.meshbook` (which stays canonical for upgrade safety — if it already exists, we never silently migrate the user away from it).
+
+### Added
+- 4 new tests covering the above (invalid-token-doesn't-persist, XDG honoured when no legacy dir, legacy dir takes precedence when present, explicit `MESHBOOK_CONFIG_DIR` wins). Pytest now 9/9 passing.
+
 ## [0.1.0] — 2026-05-10
 
 ### Added

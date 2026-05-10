@@ -76,3 +76,60 @@ def test_corrupt_config_returns_empty(tmp_path, monkeypatch):
     cli.CONFIG_DIR.mkdir()
     cli.CONFIG_PATH.write_text("{ not valid json")
     assert cli.load_config() == {}
+
+
+def test_invalid_token_does_not_persist(tmp_path, monkeypatch):
+    """Bug Rook flagged 2026-05-10 — an invalid `--token` would write
+    to disk before /api/me verification. The fix: verify against an
+    in-memory test_cfg first, only persist on success."""
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path / ".meshbook")
+    monkeypatch.setattr(cli, "CONFIG_PATH", tmp_path / ".meshbook" / "config")
+
+    # Stub out _api_call so it returns the "authenticated=false" shape
+    # /api/me actually emits for an invalid bearer.
+    def fake_api_call(method, path, *, cfg, **kw):
+        return {"data": {"authenticated": False}}
+
+    monkeypatch.setattr(cli, "_api_call", fake_api_call)
+
+    args = type("A", (), {"token": "mb_token_garbage", "base": None})()
+    rc = cli.cmd_login(args, {})
+    assert rc == 1, "cmd_login should fail on authenticated=false response"
+    assert not cli.CONFIG_PATH.exists(), \
+        "invalid token must NOT have been persisted to config"
+
+
+def test_xdg_config_home_honoured(monkeypatch, tmp_path):
+    """Defensive — if XDG_CONFIG_HOME is set AND ~/.meshbook doesn't
+    exist, the CLI should write under XDG. Legacy ~/.meshbook stays
+    canonical for upgrade safety."""
+    fake_home = tmp_path / "home"
+    fake_xdg = tmp_path / "xdg"
+    fake_home.mkdir()
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_xdg))
+    monkeypatch.delenv("MESHBOOK_CONFIG_DIR", raising=False)
+    resolved = cli._resolve_config_dir()
+    # Legacy doesn't exist → XDG wins
+    assert resolved == fake_xdg / "meshbook", resolved
+
+
+def test_legacy_config_dir_takes_precedence(monkeypatch, tmp_path):
+    """If `~/.meshbook` already exists from a prior install, keep
+    using it — don't silently migrate the user's token away."""
+    fake_home = tmp_path / "home"
+    legacy = fake_home / ".meshbook"
+    legacy.mkdir(parents=True)
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("MESHBOOK_CONFIG_DIR", raising=False)
+    assert cli._resolve_config_dir() == legacy
+
+
+def test_explicit_meshbook_config_dir_wins(monkeypatch, tmp_path):
+    """`MESHBOOK_CONFIG_DIR` overrides everything (Pi users w/
+    read-only home directories pin to a writable mount)."""
+    explicit = tmp_path / "explicit"
+    monkeypatch.setenv("MESHBOOK_CONFIG_DIR", str(explicit))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert cli._resolve_config_dir() == explicit

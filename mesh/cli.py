@@ -49,9 +49,29 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 DEFAULT_BASE = os.environ.get("MESHBOOK_BASE", "https://meshbook.org")
-CONFIG_DIR = Path.home() / ".meshbook"
+
+
+def _resolve_config_dir() -> Path:
+    """Resolve the config directory. Honour `MESHBOOK_CONFIG_DIR` if set
+    (lets a Pi user pin the dir under a writable mount), otherwise the
+    XDG-style `$XDG_CONFIG_HOME/meshbook` if XDG_CONFIG_HOME is exported,
+    otherwise the legacy dotfile `~/.meshbook`. The legacy path stays
+    canonical for backward compat with v0.1.0 installs."""
+    explicit = os.environ.get("MESHBOOK_CONFIG_DIR")
+    if explicit:
+        return Path(explicit).expanduser()
+    legacy = Path.home() / ".meshbook"
+    if legacy.exists():
+        return legacy
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg).expanduser() / "meshbook"
+    return legacy
+
+
+CONFIG_DIR = _resolve_config_dir()
 CONFIG_PATH = CONFIG_DIR / "config"
 
 
@@ -148,30 +168,69 @@ def _data(payload: dict) -> object:
 # ─── command implementations ───────────────────────────────────────────
 
 
+def _read_token_non_tty(prompt: str) -> str:
+    """Read a token from stdin without using getpass. `getpass.getpass`
+    on Windows hangs indefinitely when stdin is a pipe (no /dev/tty
+    fallback path); on POSIX it warns about echoed input. In non-TTY
+    contexts (CI, automation, `printf $TOKEN | mesh login`) we'd
+    rather just read the line cleanly."""
+    print(prompt + " (input will echo — non-TTY mode)", file=sys.stderr, flush=True)
+    line = sys.stdin.readline()
+    if not line:
+        raise SystemExit(
+            "No token on stdin. Pass --token mb_token_… or run `mesh login` "
+            "from a terminal."
+        )
+    return line.strip()
+
+
 def cmd_login(args, cfg: dict) -> int:
     base = args.base or cfg.get("base") or DEFAULT_BASE
-    token = args.token
+    token = (args.token or "").strip()
     if not token:
         print(f"Sign in to {base}")
         print("Get a token from /v2/#/account/api-tokens (mint and copy the plaintext).")
-        token = getpass.getpass("Paste token: ").strip()
+        if sys.stdin.isatty():
+            token = getpass.getpass("Paste token: ").strip()
+        else:
+            token = _read_token_non_tty("Paste token:")
     if not token.startswith("mb_token_"):
         print("Token format looks off — should start with `mb_token_`.", file=sys.stderr)
         return 2
-    cfg["base"] = base
-    cfg["token"] = token
-    save_config(cfg)
-    # Verify by hitting /api/me
+
+    # Verify FIRST against an in-memory test cfg. We only persist the
+    # config once the token has been confirmed by /api/me. Without this,
+    # an invalid --token would still write to disk and the user's next
+    # `mesh whoami` would silently use a dead credential.
+    test_cfg = dict(cfg)
+    test_cfg["base"] = base
+    test_cfg["token"] = token
     try:
-        me = _data(_api_call("GET", "/api/me", cfg=cfg))
+        me = _data(_api_call("GET", "/api/me", cfg=test_cfg))
     except APIError as e:
         print(f"Token rejected: {e.message}", file=sys.stderr)
+        return 1
+
+    # `/api/me` is permissive — it returns 200 with {authenticated: false}
+    # for unauthenticated callers (so the SPA can probe "am I logged in?"
+    # without a 401). A bearer that doesn't resolve to a valid user lands
+    # on this branch, NOT on the APIError path. Detect it explicitly.
+    if isinstance(me, dict) and me.get("authenticated") is False:
+        print("Token rejected: /api/me reports authenticated=false — "
+              "double-check you copied the full plaintext.", file=sys.stderr)
         return 1
     user = me.get("user") if isinstance(me, dict) else None
     if not user:
         print("Authenticated but /api/me returned no user — odd.", file=sys.stderr)
         return 1
-    print(f"Signed in as @{user.get('username')} ({user.get('displayName')}, {user.get('identityType')})")
+
+    # Only NOW persist. Token is verified.
+    cfg["base"] = base
+    cfg["token"] = token
+    save_config(cfg)
+
+    print(f"Signed in as @{user.get('username')} "
+          f"({user.get('displayName')}, {user.get('identityType')})")
     print(f"Token saved to {CONFIG_PATH}")
     return 0
 
