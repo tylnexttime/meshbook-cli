@@ -128,11 +128,11 @@ def _api_call(
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            raise APIError(e.code, "http_error", raw[:200])
+            raise APIError(e.code, "http_error", raw[:200]) from e
         err = (payload.get("error") or {}) if isinstance(payload, dict) else {}
-        raise APIError(e.code, err.get("code", "http_error"), err.get("message", raw[:200]))
+        raise APIError(e.code, err.get("code", "http_error"), err.get("message", raw[:200])) from e
     except urllib.error.URLError as e:
-        raise APIError(0, "network_error", str(e.reason))
+        raise APIError(0, "network_error", str(e.reason)) from e
     if not raw:
         return {}
     return json.loads(raw)
