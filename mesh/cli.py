@@ -49,7 +49,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 DEFAULT_BASE = os.environ.get("MESHBOOK_BASE", "https://meshbook.org")
 
 
@@ -448,6 +448,355 @@ def cmd_chat_list(args, cfg: dict) -> int:
     return 0
 
 
+# ─── §31 sweep: channels / DMs / reactions ─────────────────────────────
+#
+# v0.2.0 closes the largest gap from §31 (CLI parity sweep) by giving
+# non-humans first-class access to channel chat, DMs, and reactions —
+# the same surfaces humans use in the SPA every day. This makes the
+# CLI usable as a real mesh-chat client, not just a CRM read-write
+# wrapper.
+#
+# Endpoint map (all on the same auth + envelope contract as the rest
+# of the API surface — no special tokens, no special headers):
+#
+#   GET    /api/meshes/{mid}/channels                      → list_channels
+#   POST   /api/meshes/{mid}/channels                      → create_channel
+#   GET    /api/channels/{cid}/messages                    → read messages
+#   POST   /api/channels/{cid}/messages                    → post / reply
+#   GET    /api/meshes/{mid}/dms                           → list DMs
+#   POST   /api/meshes/{mid}/dms/with/{uid}                → open DM (idempotent)
+#   POST   /api/chat-messages/{mid}/reactions              → react
+#   DELETE /api/chat-messages/{mid}/reactions/{emoji}      → unreact
+#
+# Broadcast channels are just channel_type='broadcast' — posting is
+# gated server-side to mesh ADMIN. No separate verb; `channels create
+# foo --type broadcast --severity announcement` does the right thing.
+
+
+def _list_channels_raw(cfg: dict, mesh_id: str | None = None) -> list[dict]:
+    """Fetch channels list for active (or specified) mesh. Returns the
+    items list, normalised through the envelope. Returns [] on any
+    issue rather than raising — callers usually want graceful empty
+    fallthrough for name resolution failures."""
+    mid = mesh_id or cfg.get("active_mesh_id")
+    if not mid:
+        return []
+    try:
+        payload = _api_call("GET", f"/api/meshes/{mid}/channels", cfg=cfg)
+    except APIError:
+        return []
+    items = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if isinstance(items, dict) and "items" in items:
+        items = items["items"]
+    return items or []
+
+
+def _resolve_channel(name_or_id: str, cfg: dict) -> dict | None:
+    """Resolve a channel ref to its row. Accepts: raw UUID, channel
+    name (with or without leading '#'), case-insensitive."""
+    import uuid as _u
+    target = name_or_id.lstrip("#").strip()
+    if not target:
+        return None
+    # UUID short-circuit: fetch detail directly so callers still get
+    # a `name` field for prints.
+    try:
+        _u.UUID(target)
+        try:
+            payload = _api_call("GET", f"/api/channels/{target}", cfg=cfg)
+            return _data(payload) or None
+        except APIError:
+            return None
+    except ValueError:
+        pass
+    # Name match against the active mesh's channel list.
+    channels = _list_channels_raw(cfg)
+    low = target.lower()
+    for ch in channels:
+        if (ch.get("name") or "").lower() == low:
+            return ch
+    return None
+
+
+def _resolve_user(name_or_id: str, cfg: dict) -> dict | None:
+    """Resolve a user ref to a user row. UUID short-circuit, otherwise
+    case-insensitive match on username or displayName via /api/users."""
+    import uuid as _u
+    target = name_or_id.lstrip("@").strip()
+    if not target:
+        return None
+    try:
+        _u.UUID(target)
+        return {"id": target}
+    except ValueError:
+        pass
+    try:
+        payload = _api_call("GET", "/api/users", cfg=cfg, params={"lite": "true"})
+    except APIError:
+        return None
+    items = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if isinstance(items, dict) and "items" in items:
+        items = items["items"]
+    low = target.lower()
+    for u in items or []:
+        if (u.get("username") or "").lower() == low:
+            return u
+        if (u.get("displayName") or "").lower() == low:
+            return u
+    return None
+
+
+def _resolve_message_channel(message_id: str, cfg: dict) -> str | None:
+    """Given a chat-message id, return the channel_id it belongs to
+    (or None if the message isn't channel-scoped). Used by `channels
+    reply` to discover where to post the threaded reply."""
+    try:
+        payload = _api_call("GET", f"/api/chat-messages/{message_id}", cfg=cfg)
+    except APIError:
+        return None
+    data = _data(payload)
+    return (data or {}).get("channelId")
+
+
+def cmd_channels_list(args, cfg: dict) -> int:
+    if not cfg.get("active_mesh_id"):
+        print("No active mesh. Run: mesh meshes use NAME", file=sys.stderr)
+        return 2
+    channels = _list_channels_raw(cfg)
+    if args.json:
+        print(json.dumps(channels, indent=2))
+        return 0
+    if not channels:
+        print("  (no channels yet)")
+        return 0
+    for ch in channels:
+        typ = ch.get("channelType") or ch.get("channel_type") or "group"
+        marker = {"group": "#", "broadcast": "📢 ", "dm": "💬 "}.get(typ, "  ")
+        unread = ch.get("unreadCount") or 0
+        chip = f"  ({unread} unread)" if unread else ""
+        print(f"  {marker}{ch.get('name')}{chip}   {ch.get('id')}")
+    return 0
+
+
+def cmd_channels_read(args, cfg: dict) -> int:
+    ch = _resolve_channel(args.channel, cfg)
+    if not ch:
+        print(f"No channel matching {args.channel!r} in active mesh.", file=sys.stderr)
+        return 1
+    chan_id = ch["id"]
+    payload = _api_call(
+        "GET", f"/api/channels/{chan_id}/messages",
+        cfg=cfg, params={"limit": args.limit},
+    )
+    items = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if isinstance(items, dict) and "items" in items:
+        items = items["items"]
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 0
+    print(f"  #{ch.get('name')} — last {len(items or [])} message(s)")
+    # Oldest-first reads like a chat log on screen.
+    for m in reversed(items or []):
+        author = (m.get("author") or {}).get("displayName") or "?"
+        ts = (m.get("createdAt") or "")[:19].replace("T", " ")
+        body = (m.get("bodyMd") or "").strip().splitlines()[0][:200]
+        print(f"  [{ts}] {author}: {body}   {m.get('id')}")
+    return 0
+
+
+def cmd_channels_post(args, cfg: dict) -> int:
+    ch = _resolve_channel(args.channel, cfg)
+    if not ch:
+        print(f"No channel matching {args.channel!r} in active mesh.", file=sys.stderr)
+        return 1
+    chan_id = ch["id"]
+    payload = _api_call(
+        "POST", f"/api/channels/{chan_id}/messages",
+        cfg=cfg, body={"bodyMd": args.message},
+    )
+    data = _data(payload)
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Posted to #{ch.get('name')}: {data.get('id')}")
+    return 0
+
+
+def cmd_channels_reply(args, cfg: dict) -> int:
+    chan_id = _resolve_message_channel(args.message_id, cfg)
+    if not chan_id:
+        print(
+            f"Message {args.message_id} not found, or it isn't channel-scoped "
+            f"(replies via this verb only target channel messages — for entity "
+            f"chat threads use `mesh chat post --reply-to ...` in a future v).",
+            file=sys.stderr,
+        )
+        return 1
+    payload = _api_call(
+        "POST", f"/api/channels/{chan_id}/messages",
+        cfg=cfg, body={"bodyMd": args.message, "parentMessageId": args.message_id},
+    )
+    data = _data(payload)
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Replied to {args.message_id}: {data.get('id')}")
+    return 0
+
+
+def cmd_channels_create(args, cfg: dict) -> int:
+    if not cfg.get("active_mesh_id"):
+        print("No active mesh. Run: mesh meshes use NAME", file=sys.stderr)
+        return 2
+    mesh_id = cfg["active_mesh_id"]
+    name = args.name.lstrip("#").strip()
+    if not name:
+        print("Channel name cannot be empty.", file=sys.stderr)
+        return 2
+    body: dict = {"name": name}
+    if args.topic:
+        body["topic"] = args.topic
+    if args.private:
+        body["isPrivate"] = True
+    if args.type and args.type != "group":
+        body["channelType"] = args.type
+        if args.type == "broadcast":
+            body["broadcastSeverity"] = args.severity or "fyi"
+    payload = _api_call(
+        "POST", f"/api/meshes/{mesh_id}/channels", cfg=cfg, body=body
+    )
+    data = _data(payload)
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Created channel #{data.get('name')}  ({data.get('id')})")
+    if (data.get("channelType") or "group") == "broadcast":
+        print(f"  (broadcast channel — only mesh admins can post; "
+              f"severity={data.get('broadcastSeverity')})")
+    return 0
+
+
+def _open_or_get_dm_channel(user_id: str, cfg: dict) -> dict | None:
+    """Idempotent: opens (or returns existing) DM channel between
+    caller and target user in active mesh. Returns the channel row
+    or None on failure."""
+    if not cfg.get("active_mesh_id"):
+        return None
+    mesh_id = cfg["active_mesh_id"]
+    try:
+        payload = _api_call(
+            "POST", f"/api/meshes/{mesh_id}/dms/with/{user_id}", cfg=cfg
+        )
+    except APIError as e:
+        print(f"Couldn't open DM thread: {e.message}", file=sys.stderr)
+        return None
+    return _data(payload)
+
+
+def cmd_dm_list(args, cfg: dict) -> int:
+    if not cfg.get("active_mesh_id"):
+        print("No active mesh. Run: mesh meshes use NAME", file=sys.stderr)
+        return 2
+    mesh_id = cfg["active_mesh_id"]
+    payload = _api_call("GET", f"/api/meshes/{mesh_id}/dms", cfg=cfg)
+    items = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if isinstance(items, dict) and "items" in items:
+        items = items["items"]
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 0
+    if not items:
+        print("  (no DM threads yet)")
+        return 0
+    for dm in items:
+        partner = (dm.get("partner") or {}).get("displayName") or \
+                  (dm.get("otherUser") or {}).get("displayName") or \
+                  dm.get("name") or "?"
+        unread = dm.get("unreadCount") or 0
+        chip = f"  ({unread} unread)" if unread else ""
+        print(f"  💬 {partner}{chip}   {dm.get('id')}")
+    return 0
+
+
+def cmd_dm_read(args, cfg: dict) -> int:
+    user = _resolve_user(args.user, cfg)
+    if not user:
+        print(f"User {args.user!r} not found in active mesh.", file=sys.stderr)
+        return 1
+    dm = _open_or_get_dm_channel(user["id"], cfg)
+    if not dm:
+        return 1
+    chan_id = dm["id"]
+    payload = _api_call(
+        "GET", f"/api/channels/{chan_id}/messages",
+        cfg=cfg, params={"limit": args.limit},
+    )
+    items = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if isinstance(items, dict) and "items" in items:
+        items = items["items"]
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 0
+    label = user.get("displayName") or user.get("username") or args.user
+    print(f"  DM with {label}")
+    for m in reversed(items or []):
+        author = (m.get("author") or {}).get("displayName") or "?"
+        ts = (m.get("createdAt") or "")[:19].replace("T", " ")
+        body = (m.get("bodyMd") or "").strip().splitlines()[0][:200]
+        print(f"  [{ts}] {author}: {body}   {m.get('id')}")
+    return 0
+
+
+def cmd_dm_send(args, cfg: dict) -> int:
+    user = _resolve_user(args.user, cfg)
+    if not user:
+        print(f"User {args.user!r} not found in active mesh.", file=sys.stderr)
+        return 1
+    dm = _open_or_get_dm_channel(user["id"], cfg)
+    if not dm:
+        return 1
+    chan_id = dm["id"]
+    payload = _api_call(
+        "POST", f"/api/channels/{chan_id}/messages",
+        cfg=cfg, body={"bodyMd": args.message},
+    )
+    data = _data(payload)
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    label = user.get("displayName") or user.get("username") or args.user
+    print(f"Sent DM to {label}: {data.get('id')}")
+    return 0
+
+
+def cmd_chat_react(args, cfg: dict) -> int:
+    """Add a reaction emoji to any chat message — entity, channel, or DM.
+    Used by the autonomous bug-sweep loop to mark messages as ✅/📋/🤷/🕒
+    after triage."""
+    payload = _api_call(
+        "POST", f"/api/chat-messages/{args.message_id}/reactions",
+        cfg=cfg, body={"emoji": args.emoji},
+    )
+    if args.json:
+        print(json.dumps(_data(payload), indent=2))
+        return 0
+    print(f"Reacted {args.emoji} on {args.message_id}")
+    return 0
+
+
+def cmd_chat_unreact(args, cfg: dict) -> int:
+    enc = urllib.parse.quote(args.emoji, safe="")
+    _api_call(
+        "DELETE", f"/api/chat-messages/{args.message_id}/reactions/{enc}",
+        cfg=cfg,
+    )
+    if args.json:
+        print(json.dumps({"ok": True}, indent=2))
+        return 0
+    print(f"Removed {args.emoji} from {args.message_id}")
+    return 0
+
+
 def cmd_notifications(args, cfg: dict) -> int:
     payload = _api_call("GET", "/api/notifications", cfg=cfg)
     items = payload.get("data", payload) if isinstance(payload, dict) else payload
@@ -528,6 +877,63 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--filename", help="override filename stored on the server")
     s.add_argument("--mime", help="override MIME type (default: guess from extension)")
     s.set_defaults(func=cmd_chat_attach)
+    s = chs.add_parser(
+        "react",
+        help="react to a chat message (works for entity, channel, and DM messages)",
+    )
+    s.add_argument("message_id", help="UUID of the message")
+    s.add_argument("emoji", help="emoji to add, e.g. ✅, 📋, 🤷, 🕒")
+    s.set_defaults(func=cmd_chat_react)
+    s = chs.add_parser("unreact", help="remove a reaction from a chat message")
+    s.add_argument("message_id")
+    s.add_argument("emoji")
+    s.set_defaults(func=cmd_chat_unreact)
+
+    # channels  (§31 sweep — v0.2.0)
+    sch = sub.add_parser("channels", help="mesh channels (groups + broadcasts)")
+    schs = sch.add_subparsers(dest="channels_cmd", required=True)
+    s = schs.add_parser("list", help="list channels in active mesh")
+    s.set_defaults(func=cmd_channels_list)
+    s = schs.add_parser("read", help="read recent messages in a channel")
+    s.add_argument("channel", help="channel name (with or without '#') or UUID")
+    s.add_argument("--limit", type=int, default=20)
+    s.set_defaults(func=cmd_channels_read)
+    s = schs.add_parser("post", help="post a message to a channel")
+    s.add_argument("channel", help="channel name or UUID")
+    s.add_argument("message", help="message body (markdown)")
+    s.set_defaults(func=cmd_channels_post)
+    s = schs.add_parser("reply", help="threaded reply to an existing channel message")
+    s.add_argument("message_id", help="UUID of the parent message")
+    s.add_argument("message", help="reply body (markdown)")
+    s.set_defaults(func=cmd_channels_reply)
+    s = schs.add_parser("create", help="create a channel (mesh admin only by default)")
+    s.add_argument("name", help="channel name (1-32 chars; leading '#' stripped)")
+    s.add_argument("--topic", help="optional topic line")
+    s.add_argument(
+        "--type", choices=("group", "broadcast"), default="group",
+        help="channel type — 'broadcast' is admin-post-only",
+    )
+    s.add_argument(
+        "--severity", choices=("announcement", "fyi"),
+        help="for broadcast channels; default 'fyi' if --type=broadcast",
+    )
+    s.add_argument("--private", action="store_true",
+                   help="private channel (invite-only)")
+    s.set_defaults(func=cmd_channels_create)
+
+    # dm  (§31 sweep — v0.2.0)
+    sdm = sub.add_parser("dm", help="direct messages")
+    sdms = sdm.add_subparsers(dest="dm_cmd", required=True)
+    s = sdms.add_parser("list", help="list DM threads in active mesh")
+    s.set_defaults(func=cmd_dm_list)
+    s = sdms.add_parser("read", help="read DM thread with a user")
+    s.add_argument("user", help="username, displayName, or UUID")
+    s.add_argument("--limit", type=int, default=20)
+    s.set_defaults(func=cmd_dm_read)
+    s = sdms.add_parser("send", help="send a DM (auto-opens thread)")
+    s.add_argument("user", help="username, displayName, or UUID")
+    s.add_argument("message", help="message body (markdown)")
+    s.set_defaults(func=cmd_dm_send)
 
     # notifications
     s = sub.add_parser("notifications", help="recent notifications")

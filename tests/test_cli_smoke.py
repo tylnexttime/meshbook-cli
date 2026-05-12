@@ -29,7 +29,8 @@ def test_help_runs(capsys):
     assert exc.value.code == 0
     out = capsys.readouterr().out
     for cmd in ("login", "logout", "whoami", "doctor",
-                "meshes", "contacts", "chat", "notifications"):
+                "meshes", "contacts", "chat", "channels", "dm",
+                "notifications"):
         assert cmd in out
 
 
@@ -39,8 +40,75 @@ def test_chat_subcommands_present(capsys):
         parser.parse_args(["chat", "--help"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    for sub in ("post", "list", "attach"):
+    for sub in ("post", "list", "attach", "react", "unreact"):
         assert sub in out
+
+
+def test_channels_subcommands_present(capsys):
+    """§31 sweep — channel verbs landed in v0.2.0."""
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["channels", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    for sub in ("list", "read", "post", "reply", "create"):
+        assert sub in out
+
+
+def test_dm_subcommands_present(capsys):
+    """§31 sweep — DM verbs landed in v0.2.0."""
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["dm", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    for sub in ("list", "read", "send"):
+        assert sub in out
+
+
+def test_channels_create_broadcast_severity_required_via_default(capsys, tmp_path, monkeypatch):
+    """`channels create foo --type broadcast` should default broadcastSeverity
+    to 'fyi' on the wire — verifies the body shape we send to the server."""
+    captured = {}
+
+    def fake_api_call(method, path, *, cfg, body=None, **kw):
+        captured["method"] = method
+        captured["path"] = path
+        captured["body"] = body
+        return {"data": {"id": "new-id", "name": "test-bc", "channelType": "broadcast",
+                         "broadcastSeverity": "fyi"}}
+
+    monkeypatch.setattr(cli, "_api_call", fake_api_call)
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path / ".meshbook")
+    monkeypatch.setattr(cli, "CONFIG_PATH", tmp_path / ".meshbook" / "config")
+
+    args = type("A", (), {
+        "name": "#test-bc", "topic": None, "type": "broadcast",
+        "severity": None, "private": False, "json": False,
+    })()
+    rc = cli.cmd_channels_create(args, {"active_mesh_id": "mesh-1"})
+    assert rc == 0
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/meshes/mesh-1/channels"
+    assert captured["body"]["name"] == "test-bc"           # # stripped
+    assert captured["body"]["channelType"] == "broadcast"
+    assert captured["body"]["broadcastSeverity"] == "fyi"  # default applied
+
+
+def test_resolve_channel_strips_hash(monkeypatch):
+    """Channel resolution must strip a leading '#' (humans type `#bugs`,
+    the underlying name is just `bugs`)."""
+    monkeypatch.setattr(cli, "_list_channels_raw", lambda cfg, mesh_id=None: [
+        {"id": "ch-1", "name": "bugs"},
+        {"id": "ch-2", "name": "general"},
+    ])
+    out = cli._resolve_channel("#bugs", {"active_mesh_id": "m"})
+    assert out and out["id"] == "ch-1"
+    # Also case-insensitive
+    out = cli._resolve_channel("BUGS", {"active_mesh_id": "m"})
+    assert out and out["id"] == "ch-1"
+    # Missing name
+    assert cli._resolve_channel("nope", {"active_mesh_id": "m"}) is None
 
 
 def test_config_round_trip(tmp_path, monkeypatch):
