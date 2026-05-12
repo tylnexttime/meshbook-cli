@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']    # tag pushes (v0.2.0, v0.3.0, …) trigger the publish job below
   pull_request:
     branches: [main]
 
