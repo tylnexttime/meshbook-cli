@@ -30,7 +30,8 @@ def test_help_runs(capsys):
     out = capsys.readouterr().out
     for cmd in ("login", "logout", "whoami", "doctor",
                 "meshes", "contacts", "chat", "channels", "dm",
-                "notifications"):
+                "leads", "tasks", "projects", "companies",
+                "custom-fields", "saved-views", "notifications"):
         assert cmd in out
 
 
@@ -109,6 +110,92 @@ def test_resolve_channel_strips_hash(monkeypatch):
     assert out and out["id"] == "ch-1"
     # Missing name
     assert cli._resolve_channel("nope", {"active_mesh_id": "m"}) is None
+
+
+# ─── §31 batch 2 (v0.3.0) — CRM verbs ──────────────────────────────────
+
+
+@pytest.mark.parametrize("group,subs", [
+    ("leads", ("list", "create", "move")),
+    ("tasks", ("list", "create", "complete")),
+    ("projects", ("list", "create")),
+    ("companies", ("list", "create")),
+    ("custom-fields", ("list",)),
+    ("saved-views", ("list",)),
+])
+def test_batch2_subcommands_present(capsys, group, subs):
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args([group, "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    for sub in subs:
+        assert sub in out, f"{group} missing subcommand {sub}"
+
+
+def test_items_envelope_shapes():
+    """_items must normalise bare-list, {data:[...]}, and
+    {data:{items:[...]}} into a plain list."""
+    assert cli._items([1, 2, 3]) == [1, 2, 3]
+    assert cli._items({"data": [1, 2]}) == [1, 2]
+    assert cli._items({"data": {"items": [9], "total": 1}}) == [9]
+    assert cli._items({"data": None}) == []
+    assert cli._items(None) == []
+
+
+def test_leads_create_wire_shape(monkeypatch):
+    """Lead create must send camelCase pipelineId/stageId + title."""
+    captured = {}
+
+    def fake_api_call(method, path, *, cfg, body=None, **kw):
+        captured.update(method=method, path=path, body=body)
+        return {"data": {"id": "lead-1", "title": "Big deal"}}
+
+    monkeypatch.setattr(cli, "_api_call", fake_api_call)
+    args = type("A", (), {
+        "title": "Big deal", "pipeline": "pid", "stage": "sid",
+        "value": 1000.0, "description": None, "json": False,
+    })()
+    rc = cli.cmd_leads_create(args, {"active_mesh_id": "m"})
+    assert rc == 0
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/leads"
+    assert captured["body"] == {
+        "title": "Big deal", "pipelineId": "pid", "stageId": "sid",
+        "valueAmount": 1000.0,
+    }
+
+
+def test_tasks_complete_wire_shape(monkeypatch):
+    """tasks complete defaults to PATCH status=Done on /api/tasks/{id}."""
+    captured = {}
+
+    def fake_api_call(method, path, *, cfg, body=None, **kw):
+        captured.update(method=method, path=path, body=body)
+        return {"data": {"id": "t-1", "status": "Done"}}
+
+    monkeypatch.setattr(cli, "_api_call", fake_api_call)
+    args = type("A", (), {"task_id": "t-1", "status": "Done", "json": False})()
+    rc = cli.cmd_tasks_complete(args, {"active_mesh_id": "m"})
+    assert rc == 0
+    assert captured["method"] == "PATCH"
+    assert captured["path"] == "/api/tasks/t-1"
+    assert captured["body"] == {"status": "Done"}
+
+
+def test_leads_move_wire_shape(monkeypatch):
+    captured = {}
+
+    def fake_api_call(method, path, *, cfg, body=None, **kw):
+        captured.update(method=method, path=path, body=body)
+        return {"data": {"id": "lead-1"}}
+
+    monkeypatch.setattr(cli, "_api_call", fake_api_call)
+    args = type("A", (), {"lead_id": "lead-1", "stage": "stage-2", "json": False})()
+    rc = cli.cmd_leads_move(args, {"active_mesh_id": "m"})
+    assert rc == 0
+    assert captured["path"] == "/api/leads/lead-1/move-stage"
+    assert captured["body"] == {"stageId": "stage-2"}
 
 
 def test_config_round_trip(tmp_path, monkeypatch):

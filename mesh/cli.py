@@ -49,7 +49,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 DEFAULT_BASE = os.environ.get("MESHBOOK_BASE", "https://meshbook.org")
 
 
@@ -163,6 +163,18 @@ def _data(payload: dict) -> object:
     if isinstance(payload, dict) and "data" in payload:
         return payload["data"]
     return payload
+
+
+def _items(payload: object) -> list:
+    """Normalise a list response through the envelope to a plain list.
+
+    Handles all three shapes the API emits: a bare list, {data: [...]},
+    and the ok_list paginated shape {data: {items: [...], total}}.
+    """
+    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if isinstance(data, dict) and "items" in data:
+        data = data["items"]
+    return data or []
 
 
 # ─── command implementations ───────────────────────────────────────────
@@ -814,6 +826,181 @@ def cmd_notifications(args, cfg: dict) -> int:
     return 0
 
 
+# ─── §31 batch 2: CRM verbs (leads / tasks / projects / companies) ─────
+#
+# Batch 1 (v0.2.0) gave non-humans channels + DMs + reactions. Batch 2
+# (v0.3.0) adds the daily-driver CRM verbs so the CLI is a full working
+# client, not just a chat tool: read + create across the four core
+# entities, plus lead stage-moves and task completion, plus read access
+# to custom-field definitions and saved views. Same auth + envelope
+# contract; every list uses _items() for envelope normalisation.
+
+
+def cmd_leads_list(args, cfg: dict) -> int:
+    params = {
+        "limit": args.limit, "pipelineId": args.pipeline,
+        "stageId": args.stage, "companyId": args.company,
+    }
+    items = _items(_api_call("GET", "/api/leads", cfg=cfg, params=params))
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 0
+    for ld in items:
+        val = ld.get("valueAmount")
+        money = f"  {val} {ld.get('currency', '')}".rstrip() if val is not None else ""
+        stage = ld.get("stageName") or ld.get("stageId") or ""
+        print(f"  {ld.get('title')}{money}  [{stage}]   {ld.get('id')}")
+    return 0
+
+
+def cmd_leads_create(args, cfg: dict) -> int:
+    body = {"title": args.title, "pipelineId": args.pipeline, "stageId": args.stage}
+    if args.value is not None:
+        body["valueAmount"] = args.value
+    if args.description:
+        body["description"] = args.description
+    data = _data(_api_call("POST", "/api/leads", cfg=cfg, body=body))
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Created lead: {data.get('title')} ({data.get('id')})")
+    return 0
+
+
+def cmd_leads_move(args, cfg: dict) -> int:
+    data = _data(_api_call(
+        "POST", f"/api/leads/{args.lead_id}/move-stage",
+        cfg=cfg, body={"stageId": args.stage},
+    ))
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Moved lead {args.lead_id} → stage {args.stage}")
+    return 0
+
+
+def cmd_tasks_list(args, cfg: dict) -> int:
+    params = {
+        "limit": args.limit, "projectId": args.project,
+        "assigneeId": args.assignee, "status": args.status,
+    }
+    items = _items(_api_call("GET", "/api/tasks", cfg=cfg, params=params))
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 0
+    for tk in items:
+        print(f"  [{tk.get('status', '?')}] {tk.get('title')}   {tk.get('id')}")
+    return 0
+
+
+def cmd_tasks_create(args, cfg: dict) -> int:
+    body = {"projectId": args.project, "title": args.title}
+    if args.priority:
+        body["priority"] = args.priority
+    if args.description:
+        body["description"] = args.description
+    data = _data(_api_call("POST", "/api/tasks", cfg=cfg, body=body))
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Created task: {data.get('title')} ({data.get('id')})")
+    return 0
+
+
+def cmd_tasks_complete(args, cfg: dict) -> int:
+    # Valid task statuses: NotStarted / InProgress / Blocked / Review /
+    # Done / Cancelled. "Done" is the completion terminal; --status lets
+    # a caller set a different terminal (e.g. Cancelled).
+    data = _data(_api_call(
+        "PATCH", f"/api/tasks/{args.task_id}",
+        cfg=cfg, body={"status": args.status},
+    ))
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Task {args.task_id} → {args.status}")
+    return 0
+
+
+def cmd_projects_list(args, cfg: dict) -> int:
+    params = {"limit": args.limit, "portfolioId": args.portfolio, "statusFilter": args.status}
+    items = _items(_api_call("GET", "/api/projects", cfg=cfg, params=params))
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 0
+    for pr in items:
+        code = f"  ({pr.get('code')})" if pr.get("code") else ""
+        print(f"  [{pr.get('status', '?')}] {pr.get('name')}{code}   {pr.get('id')}")
+    return 0
+
+
+def cmd_projects_create(args, cfg: dict) -> int:
+    body = {"name": args.name}
+    if args.code:
+        body["code"] = args.code
+    if args.description:
+        body["description"] = args.description
+    if args.portfolio:
+        body["portfolioId"] = args.portfolio
+    data = _data(_api_call("POST", "/api/projects", cfg=cfg, body=body))
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Created project: {data.get('name')} ({data.get('id')})")
+    return 0
+
+
+def cmd_companies_list(args, cfg: dict) -> int:
+    params = {"limit": args.limit, "search": args.search}
+    items = _items(_api_call("GET", "/api/companies", cfg=cfg, params=params))
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 0
+    for co in items:
+        ind = f"  ({co.get('industry')})" if co.get("industry") else ""
+        print(f"  {co.get('name')}{ind}   {co.get('id')}")
+    return 0
+
+
+def cmd_companies_create(args, cfg: dict) -> int:
+    body = {"name": args.name}
+    for arg_name, wire in (("website", "website"), ("industry", "industry"),
+                           ("email", "email"), ("phone", "phone")):
+        val = getattr(args, arg_name)
+        if val:
+            body[wire] = val
+    data = _data(_api_call("POST", "/api/companies", cfg=cfg, body=body))
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Created company: {data.get('name')} ({data.get('id')})")
+    return 0
+
+
+def cmd_custom_fields_list(args, cfg: dict) -> int:
+    params = {"entityType": args.entity}
+    items = _items(_api_call("GET", "/api/custom-fields", cfg=cfg, params=params))
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 0
+    for cf in items:
+        req = " *required" if cf.get("isRequired") else ""
+        print(f"  {cf.get('entityType')}.{cf.get('fieldKey')} "
+              f"({cf.get('fieldType')}) — {cf.get('label')}{req}   {cf.get('id')}")
+    return 0
+
+
+def cmd_saved_views_list(args, cfg: dict) -> int:
+    params = {"entityType": args.entity} if args.entity else None
+    items = _items(_api_call("GET", "/api/saved-views", cfg=cfg, params=params))
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 0
+    for sv in items:
+        print(f"  {sv.get('entityType')}: {sv.get('name')}   {sv.get('id')}")
+    return 0
+
+
 # ─── argparse plumbing ─────────────────────────────────────────────────
 
 
@@ -934,6 +1121,92 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("user", help="username, displayName, or UUID")
     s.add_argument("message", help="message body (markdown)")
     s.set_defaults(func=cmd_dm_send)
+
+    # leads  (§31 batch 2 — v0.3.0)
+    sl = sub.add_parser("leads", help="CRM leads")
+    sls = sl.add_subparsers(dest="leads_cmd", required=True)
+    s = sls.add_parser("list", help="list leads in active mesh")
+    s.add_argument("--limit", type=int, default=50)
+    s.add_argument("--pipeline", help="filter by pipeline UUID")
+    s.add_argument("--stage", help="filter by stage UUID")
+    s.add_argument("--company", help="filter by company UUID")
+    s.set_defaults(func=cmd_leads_list)
+    s = sls.add_parser("create", help="create a lead")
+    s.add_argument("--title", required=True)
+    s.add_argument("--pipeline", required=True, help="pipeline UUID")
+    s.add_argument("--stage", required=True, help="stage UUID")
+    s.add_argument("--value", type=float, help="value amount")
+    s.add_argument("--description")
+    s.set_defaults(func=cmd_leads_create)
+    s = sls.add_parser("move", help="move a lead to a different pipeline stage")
+    s.add_argument("lead_id", help="lead UUID")
+    s.add_argument("stage", help="target stage UUID")
+    s.set_defaults(func=cmd_leads_move)
+
+    # tasks  (§31 batch 2 — v0.3.0)
+    st = sub.add_parser("tasks", help="project tasks")
+    sts = st.add_subparsers(dest="tasks_cmd", required=True)
+    s = sts.add_parser("list", help="list tasks in active mesh")
+    s.add_argument("--limit", type=int, default=50)
+    s.add_argument("--project", help="filter by project UUID")
+    s.add_argument("--assignee", help="filter by assignee UUID")
+    s.add_argument("--status", help="filter by status (NotStarted/InProgress/Blocked/Review/Done/Cancelled)")
+    s.set_defaults(func=cmd_tasks_list)
+    s = sts.add_parser("create", help="create a task")
+    s.add_argument("--project", required=True, help="project UUID")
+    s.add_argument("--title", required=True)
+    s.add_argument("--priority", help="Low/Normal/High/Urgent")
+    s.add_argument("--description")
+    s.set_defaults(func=cmd_tasks_create)
+    s = sts.add_parser("complete", help="mark a task done (or another terminal status)")
+    s.add_argument("task_id", help="task UUID")
+    s.add_argument("--status", default="Done",
+                   help="terminal status to set (default Done; e.g. Cancelled)")
+    s.set_defaults(func=cmd_tasks_complete)
+
+    # projects  (§31 batch 2 — v0.3.0)
+    sp = sub.add_parser("projects", help="task-container projects")
+    sps = sp.add_subparsers(dest="projects_cmd", required=True)
+    s = sps.add_parser("list", help="list projects in active mesh")
+    s.add_argument("--limit", type=int, default=50)
+    s.add_argument("--portfolio", help="filter by portfolio UUID")
+    s.add_argument("--status", help="filter by status (Planning/Active/OnHold/Complete/Cancelled)")
+    s.set_defaults(func=cmd_projects_list)
+    s = sps.add_parser("create", help="create a project")
+    s.add_argument("--name", required=True)
+    s.add_argument("--code", help="short project code")
+    s.add_argument("--description")
+    s.add_argument("--portfolio", help="portfolio UUID")
+    s.set_defaults(func=cmd_projects_create)
+
+    # companies  (§31 batch 2 — v0.3.0)
+    sco = sub.add_parser("companies", help="CRM companies")
+    scos = sco.add_subparsers(dest="companies_cmd", required=True)
+    s = scos.add_parser("list", help="list companies in active mesh")
+    s.add_argument("--search", help="search term")
+    s.add_argument("--limit", type=int, default=50)
+    s.set_defaults(func=cmd_companies_list)
+    s = scos.add_parser("create", help="create a company")
+    s.add_argument("--name", required=True)
+    s.add_argument("--website")
+    s.add_argument("--industry")
+    s.add_argument("--email")
+    s.add_argument("--phone")
+    s.set_defaults(func=cmd_companies_create)
+
+    # custom-fields (read)  (§31 batch 2 — v0.3.0)
+    scf = sub.add_parser("custom-fields", help="custom field definitions (read)")
+    scfs = scf.add_subparsers(dest="custom_fields_cmd", required=True)
+    s = scfs.add_parser("list", help="list custom field definitions")
+    s.add_argument("--entity", help="filter by entity type (contact/company/lead/...)")
+    s.set_defaults(func=cmd_custom_fields_list)
+
+    # saved-views (read)  (§31 batch 2 — v0.3.0)
+    ssv = sub.add_parser("saved-views", help="saved views (read)")
+    ssvs = ssv.add_subparsers(dest="saved_views_cmd", required=True)
+    s = ssvs.add_parser("list", help="list saved views")
+    s.add_argument("--entity", help="filter by entity type")
+    s.set_defaults(func=cmd_saved_views_list)
 
     # notifications
     s = sub.add_parser("notifications", help="recent notifications")
