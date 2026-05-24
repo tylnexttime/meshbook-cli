@@ -49,7 +49,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 DEFAULT_BASE = os.environ.get("MESHBOOK_BASE", "https://meshbook.org")
 
 
@@ -386,6 +386,10 @@ def cmd_chat_post(args, cfg: dict) -> int:
         return 2
     mesh_id = cfg["active_mesh_id"]
     body = {"bodyMd": args.message}
+    if getattr(args, "reply_to", None):
+        # Entity-chat threading: the server accepts parentMessageId
+        # (also replyToId) on the mesh-chat POST.
+        body["parentMessageId"] = args.reply_to
     payload = _api_call(
         "POST", f"/api/entities/mesh/{mesh_id}/chat", cfg=cfg, body=body
     )
@@ -1001,6 +1005,158 @@ def cmd_saved_views_list(args, cfg: dict) -> int:
     return 0
 
 
+# ─── §31 batch 2b — members / task time-logs / saved-view create ───────
+#
+# Closes the remaining daily-driver gaps from §31.
+#
+# NOTE: `api-tokens` (list/mint/revoke) is deliberately NOT added. Those
+# endpoints (/api/me/api-tokens) refuse API-token callers by design — a
+# leaked bearer token must not be able to mint more tokens — and this CLI
+# authenticates with a bearer token, so the verbs would only ever 403.
+# Token management stays SPA-cookie-only. (Verified against
+# app/routers/api_tokens.py `_refuse_if_api_token_call` on all three routes.)
+
+
+def _self_user_id(cfg: dict) -> str | None:
+    """Resolve the signed-in user's own UUID via /api/me (for `leave`)."""
+    try:
+        me = _data(_api_call("GET", "/api/me", cfg=cfg))
+    except APIError:
+        return None
+    user = me.get("user") if isinstance(me, dict) else None
+    return (user or {}).get("id")
+
+
+def cmd_members_invite(args, cfg: dict) -> int:
+    if not cfg.get("active_mesh_id"):
+        print("No active mesh. Run: mesh meshes use NAME", file=sys.stderr)
+        return 2
+    mesh_id = cfg["active_mesh_id"]
+    uname = args.user.lstrip("@")
+    body: dict = {"username": uname}
+    if args.role:
+        body["role"] = args.role
+    data = _data(_api_call("POST", f"/api/meshes/{mesh_id}/invite", cfg=cfg, body=body))
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    suffix = f" as {args.role}" if args.role else " (default invite role)"
+    print(f"Invited @{uname}{suffix}")
+    return 0
+
+
+def cmd_members_accept(args, cfg: dict) -> int:
+    """Accept (or --decline) a pending invitation to a mesh by its UUID.
+    The mesh isn't active yet, so this takes the mesh id explicitly —
+    list pending invites in the SPA or via /api/meshes/my-pending."""
+    action = "decline" if args.decline else "accept"
+    data = _data(_api_call(
+        "POST", f"/api/meshes/{args.mesh}/respond", cfg=cfg, body={"action": action}
+    ))
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"{action.title()}ed invitation to mesh {args.mesh}")
+    return 0
+
+
+def cmd_members_set_role(args, cfg: dict) -> int:
+    if not cfg.get("active_mesh_id"):
+        print("No active mesh. Run: mesh meshes use NAME", file=sys.stderr)
+        return 2
+    mesh_id = cfg["active_mesh_id"]
+    user = _resolve_user(args.user, cfg)
+    if not user:
+        print(f"User {args.user!r} not found in active mesh.", file=sys.stderr)
+        return 1
+    data = _data(_api_call(
+        "POST", f"/api/meshes/{mesh_id}/set-role",
+        cfg=cfg, body={"userId": user["id"], "role": args.role},
+    ))
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Set {args.user} → {args.role} in active mesh")
+    return 0
+
+
+def cmd_members_remove(args, cfg: dict) -> int:
+    if not cfg.get("active_mesh_id"):
+        print("No active mesh. Run: mesh meshes use NAME", file=sys.stderr)
+        return 2
+    mesh_id = cfg["active_mesh_id"]
+    user = _resolve_user(args.user, cfg)
+    if not user:
+        print(f"User {args.user!r} not found in active mesh.", file=sys.stderr)
+        return 1
+    data = _data(_api_call(
+        "POST", f"/api/meshes/{mesh_id}/remove", cfg=cfg, body={"userId": user["id"]}
+    ))
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Removed {args.user} from active mesh")
+    return 0
+
+
+def cmd_members_leave(args, cfg: dict) -> int:
+    if not cfg.get("active_mesh_id"):
+        print("No active mesh. Run: mesh meshes use NAME", file=sys.stderr)
+        return 2
+    mesh_id = cfg["active_mesh_id"]
+    uid = _self_user_id(cfg)
+    if not uid:
+        print("Couldn't resolve your own user id from /api/me.", file=sys.stderr)
+        return 1
+    # §49: Account Managers can't leave a mesh attached to their own
+    # subscription — the server returns 403; surface its message.
+    data = _data(_api_call(
+        "POST", f"/api/meshes/{mesh_id}/remove", cfg=cfg, body={"userId": uid}
+    ))
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Left mesh {mesh_id}")
+    return 0
+
+
+def cmd_tasks_log(args, cfg: dict) -> int:
+    """Log hours against a task (POST /api/task-time-logs). Date defaults
+    to today (UTC). Hours must be > 0 and ≤ 24."""
+    import datetime as _dt
+    log_date = args.date or _dt.datetime.now(_dt.timezone.utc).date().isoformat()
+    body: dict = {"taskId": args.task_id, "hours": args.hours, "loggedForDate": log_date}
+    if args.note:
+        body["note"] = args.note
+    data = _data(_api_call("POST", "/api/task-time-logs", cfg=cfg, body=body))
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Logged {args.hours}h on task {args.task_id} for {log_date}")
+    return 0
+
+
+def cmd_saved_views_create(args, cfg: dict) -> int:
+    """Create a saved view. NOTE the create field is `module` (the entity
+    grouping the view belongs to, e.g. leads / contacts / tasks), NOT
+    `entityType` — verified against app/routers/saved_views.py SavedViewIn."""
+    body: dict = {"module": args.module, "name": args.name}
+    if args.filter:
+        try:
+            body["filterJson"] = json.loads(args.filter)
+        except json.JSONDecodeError as e:
+            print(f"--filter must be valid JSON: {e}", file=sys.stderr)
+            return 2
+    if args.shared:
+        body["isShared"] = True
+    data = _data(_api_call("POST", "/api/saved-views", cfg=cfg, body=body))
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Created saved view '{args.name}' for {args.module}  ({data.get('id')})")
+    return 0
+
+
 # ─── argparse plumbing ─────────────────────────────────────────────────
 
 
@@ -1054,6 +1210,8 @@ def build_parser() -> argparse.ArgumentParser:
     chs = ch.add_subparsers(dest="chat_cmd", required=True)
     s = chs.add_parser("post", help="post a message in active mesh")
     s.add_argument("message")
+    s.add_argument("--reply-to", dest="reply_to",
+                   help="UUID of a message in this mesh to thread the reply under")
     s.set_defaults(func=cmd_chat_post)
     s = chs.add_parser("list", help="recent messages in active mesh")
     s.add_argument("--limit", type=int, default=20)
@@ -1163,6 +1321,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--status", default="Done",
                    help="terminal status to set (default Done; e.g. Cancelled)")
     s.set_defaults(func=cmd_tasks_complete)
+    s = sts.add_parser("log", help="log hours against a task (time tracking)")
+    s.add_argument("task_id", help="task UUID")
+    s.add_argument("--hours", type=float, required=True, help="hours worked (0 < h <= 24)")
+    s.add_argument("--date", help="date worked (YYYY-MM-DD; default today UTC)")
+    s.add_argument("--note", help="optional note")
+    s.set_defaults(func=cmd_tasks_log)
 
     # projects  (§31 batch 2 — v0.3.0)
     sp = sub.add_parser("projects", help="task-container projects")
@@ -1207,6 +1371,35 @@ def build_parser() -> argparse.ArgumentParser:
     s = ssvs.add_parser("list", help="list saved views")
     s.add_argument("--entity", help="filter by entity type")
     s.set_defaults(func=cmd_saved_views_list)
+    s = ssvs.add_parser("create", help="create a saved view")
+    s.add_argument("--module", required=True,
+                   help="entity grouping the view belongs to (leads/contacts/tasks/...)")
+    s.add_argument("--name", required=True, help="view name")
+    s.add_argument("--filter", help="filter as a JSON object string")
+    s.add_argument("--shared", action="store_true", help="share with the whole mesh")
+    s.set_defaults(func=cmd_saved_views_create)
+
+    # members  (§31 batch 2b)
+    smem = sub.add_parser("members", help="mesh membership (invite / accept / role / remove / leave)")
+    smems = smem.add_subparsers(dest="members_cmd", required=True)
+    s = smems.add_parser("invite", help="invite a user to the active mesh by username")
+    s.add_argument("user", help="username (with or without '@')")
+    s.add_argument("--role", choices=("admin", "member", "reader"),
+                   help="role (omit to use the mesh's default invite role)")
+    s.set_defaults(func=cmd_members_invite)
+    s = smems.add_parser("accept", help="accept (or --decline) a pending invitation by mesh UUID")
+    s.add_argument("mesh", help="mesh UUID you were invited to")
+    s.add_argument("--decline", action="store_true", help="decline instead of accept")
+    s.set_defaults(func=cmd_members_accept)
+    s = smems.add_parser("set-role", help="change a member's role in the active mesh")
+    s.add_argument("user", help="username, displayName, or UUID")
+    s.add_argument("role", choices=("member", "reader"), help="new role")
+    s.set_defaults(func=cmd_members_set_role)
+    s = smems.add_parser("remove", help="remove a member from the active mesh")
+    s.add_argument("user", help="username, displayName, or UUID")
+    s.set_defaults(func=cmd_members_remove)
+    s = smems.add_parser("leave", help="leave the active mesh (you)")
+    s.set_defaults(func=cmd_members_leave)
 
     # notifications
     s = sub.add_parser("notifications", help="recent notifications")

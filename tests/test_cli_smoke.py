@@ -198,6 +198,129 @@ def test_leads_move_wire_shape(monkeypatch):
     assert captured["body"] == {"stageId": "stage-2"}
 
 
+# ─── §31 batch 2b — members / task time-logs / saved-view create ───────
+
+
+def test_help_includes_members(capsys):
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--help"])
+    assert "members" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("group,subs", [
+    ("members", ("invite", "accept", "set-role", "remove", "leave")),
+    ("tasks", ("log",)),
+    ("saved-views", ("create",)),
+])
+def test_batch2b_subcommands_present(capsys, group, subs):
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args([group, "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    for sub in subs:
+        assert sub in out, f"{group} missing subcommand {sub}"
+
+
+def test_members_invite_wire_shape(monkeypatch):
+    captured = {}
+
+    def fake_api_call(method, path, *, cfg, body=None, **kw):
+        captured.update(method=method, path=path, body=body)
+        return {"data": {"invited": True}}
+
+    monkeypatch.setattr(cli, "_api_call", fake_api_call)
+    args = type("A", (), {"user": "@rook", "role": "member", "json": False})()
+    rc = cli.cmd_members_invite(args, {"active_mesh_id": "m1"})
+    assert rc == 0
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/meshes/m1/invite"
+    assert captured["body"] == {"username": "rook", "role": "member"}
+
+
+def test_members_invite_default_role_omitted(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(cli, "_api_call",
+                        lambda m, p, *, cfg, body=None, **kw: captured.update(body=body) or {"data": {}})
+    args = type("A", (), {"user": "rook", "role": None, "json": False})()
+    cli.cmd_members_invite(args, {"active_mesh_id": "m1"})
+    assert captured["body"] == {"username": "rook"}  # no role key when default
+
+
+def test_members_set_role_wire_shape(monkeypatch):
+    captured = {}
+
+    def fake_api_call(method, path, *, cfg, body=None, **kw):
+        captured.update(method=method, path=path, body=body)
+        return {"data": {}}
+
+    monkeypatch.setattr(cli, "_api_call", fake_api_call)
+    monkeypatch.setattr(cli, "_resolve_user", lambda u, cfg: {"id": "u-9"})
+    args = type("A", (), {"user": "rook", "role": "reader", "json": False})()
+    rc = cli.cmd_members_set_role(args, {"active_mesh_id": "m1"})
+    assert rc == 0
+    assert captured["path"] == "/api/meshes/m1/set-role"
+    assert captured["body"] == {"userId": "u-9", "role": "reader"}
+
+
+def test_members_accept_wire_shape(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(cli, "_api_call",
+                        lambda m, p, *, cfg, body=None, **kw: captured.update(path=p, body=body) or {"data": {}})
+    args = type("A", (), {"mesh": "mesh-7", "decline": False, "json": False})()
+    cli.cmd_members_accept(args, {})
+    assert captured["path"] == "/api/meshes/mesh-7/respond"
+    assert captured["body"] == {"action": "accept"}
+
+
+def test_tasks_log_wire_shape_defaults_today(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(cli, "_api_call",
+                        lambda m, p, *, cfg, body=None, **kw: captured.update(method=m, path=p, body=body) or {"data": {}})
+    args = type("A", (), {"task_id": "t-1", "hours": 2.5, "date": None, "note": None, "json": False})()
+    rc = cli.cmd_tasks_log(args, {"active_mesh_id": "m1"})
+    assert rc == 0
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/task-time-logs"
+    assert captured["body"]["taskId"] == "t-1"
+    assert captured["body"]["hours"] == 2.5
+    # date defaulted to an ISO YYYY-MM-DD string
+    assert len(captured["body"]["loggedForDate"]) == 10 and captured["body"]["loggedForDate"].count("-") == 2
+    assert "note" not in captured["body"]
+
+
+def test_saved_views_create_uses_module_field(monkeypatch):
+    """Regression guard: create body uses `module`, NOT `entityType`
+    (verified against SavedViewIn). A wrong key would 422 server-side."""
+    captured = {}
+    monkeypatch.setattr(cli, "_api_call",
+                        lambda m, p, *, cfg, body=None, **kw: captured.update(path=p, body=body) or {"data": {"id": "sv-1"}})
+    args = type("A", (), {"module": "leads", "name": "Hot", "filter": '{"stageId":"x"}', "shared": True, "json": False})()
+    rc = cli.cmd_saved_views_create(args, {"active_mesh_id": "m1"})
+    assert rc == 0
+    assert captured["path"] == "/api/saved-views"
+    assert captured["body"] == {"module": "leads", "name": "Hot",
+                                "filterJson": {"stageId": "x"}, "isShared": True}
+
+
+def test_saved_views_create_bad_filter_json(monkeypatch):
+    monkeypatch.setattr(cli, "_api_call", lambda *a, **k: {"data": {}})
+    args = type("A", (), {"module": "leads", "name": "X", "filter": "{not json", "shared": False, "json": False})()
+    assert cli.cmd_saved_views_create(args, {}) == 2
+
+
+def test_chat_post_reply_to_threads(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(cli, "_api_call",
+                        lambda m, p, *, cfg, body=None, **kw: captured.update(path=p, body=body) or {"data": {"id": "msg-2"}})
+    args = type("A", (), {"message": "re: that", "reply_to": "msg-1", "json": False})()
+    rc = cli.cmd_chat_post(args, {"active_mesh_id": "m1"})
+    assert rc == 0
+    assert captured["path"] == "/api/entities/mesh/m1/chat"
+    assert captured["body"] == {"bodyMd": "re: that", "parentMessageId": "msg-1"}
+
+
 def test_config_round_trip(tmp_path, monkeypatch):
     """Config writes + reads cleanly through load/save/reset."""
     monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path / ".meshbook")
