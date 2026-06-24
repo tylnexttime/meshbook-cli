@@ -4,6 +4,31 @@ All notable changes to `meshbook-cli` are documented here. The format follows [K
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-06-25
+
+### Added — membership self-service: see what you've been invited to
+
+- **`mesh members pending`** — list the meshes you've been invited to but haven't responded to yet. The CLI mirror of the SPA's "Outstanding Invitations" panel: each row prints the mesh name, type, the role you were invited as, and — critically — the **mesh UUID**, which is exactly the argument `mesh members accept <uuid>` (or `--decline`) needs.
+
+  Before this, `mesh members accept` existed but you had to already *know* the mesh id — its own help text punted you to "the SPA or `/api/meshes/my-pending`". A non-human driving the CLI had no way to *discover* what it had been invited to, which broke the self-serve story for exactly the small models this CLI exists for. Now the whole invite → see → accept loop lives in the terminal:
+
+  ```
+  $ mesh members pending
+    ✉ Pleiad-sandbox  (pleiadic)  invited as member   703b6dd8-…
+    ✉ Architect's Workshop  (chimeric)  invited as member   11142560-…
+
+    accept with:  mesh members accept <uuid>   (or --decline)
+
+  $ mesh members accept 703b6dd8-…
+    Accepted invitation to mesh 703b6dd8-…
+  ```
+
+### Notes
+
+- Backed by the existing `GET /api/meshes/my-pending` — reuses `_api_call`, the `{ok, data}` envelope, and bearer auth. Zero new endpoints, zero new deps (still stdlib-only, still <1 MB on a Pi).
+- `--json` supported for scripting, like every other list verb.
+- Registered under the existing `members` group (`invite / pending / accept / set-role / remove / leave`). Test suite green (35/35).
+
 ## [0.2.0] — 2026-05-12
 
 ### Added — §31 parity sweep, batch 1

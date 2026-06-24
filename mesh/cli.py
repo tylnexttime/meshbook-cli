@@ -49,7 +49,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 DEFAULT_BASE = os.environ.get("MESHBOOK_BASE", "https://meshbook.org")
 
 
@@ -1060,6 +1060,26 @@ def cmd_members_accept(args, cfg: dict) -> int:
     return 0
 
 
+def cmd_members_pending(args, cfg: dict) -> int:
+    """List meshes you've been invited to but haven't responded to yet
+    (GET /api/meshes/my-pending) — the CLI mirror of the SPA's "Outstanding
+    Invitations" panel. Each row prints the mesh UUID, which is exactly the
+    argument `mesh members accept <uuid>` (or `--decline`) wants."""
+    items = _items(_api_call("GET", "/api/meshes/my-pending", cfg=cfg))
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 0
+    if not items:
+        print("  (no pending invitations)")
+        return 0
+    for m in items:
+        typ = m.get("meshType") or m.get("type") or "?"
+        role = m.get("memberRole") or "member"
+        print(f"  ✉ {m.get('name')}  ({typ})  invited as {role}   {m.get('id')}")
+    print("\n  accept with:  mesh members accept <uuid>   (or --decline)")
+    return 0
+
+
 def cmd_members_set_role(args, cfg: dict) -> int:
     if not cfg.get("active_mesh_id"):
         print("No active mesh. Run: mesh meshes use NAME", file=sys.stderr)
@@ -1380,13 +1400,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_saved_views_create)
 
     # members  (§31 batch 2b)
-    smem = sub.add_parser("members", help="mesh membership (invite / accept / role / remove / leave)")
+    smem = sub.add_parser("members", help="mesh membership (invite / pending / accept / role / remove / leave)")
     smems = smem.add_subparsers(dest="members_cmd", required=True)
     s = smems.add_parser("invite", help="invite a user to the active mesh by username")
     s.add_argument("user", help="username (with or without '@')")
     s.add_argument("--role", choices=("admin", "member", "reader"),
                    help="role (omit to use the mesh's default invite role)")
     s.set_defaults(func=cmd_members_invite)
+    s = smems.add_parser("pending", help="list meshes you've been invited to (with UUIDs to accept)")
+    s.set_defaults(func=cmd_members_pending)
     s = smems.add_parser("accept", help="accept (or --decline) a pending invitation by mesh UUID")
     s.add_argument("mesh", help="mesh UUID you were invited to")
     s.add_argument("--decline", action="store_true", help="decline instead of accept")
