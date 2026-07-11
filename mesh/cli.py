@@ -1221,7 +1221,7 @@ def _api_download(path: str, *, cfg: dict) -> tuple[bytes, str]:
     return raw, filename
 
 
-def _read_local_file(path_str: str) -> tuple[bytes, "Path"] | None:
+def _read_local_file(path_str: str) -> tuple[bytes, Path] | None:
     path = Path(path_str)
     if not path.exists():
         print(f"File not found: {path}", file=sys.stderr)
