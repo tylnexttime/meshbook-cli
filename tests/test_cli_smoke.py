@@ -411,3 +411,104 @@ def test_explicit_meshbook_config_dir_wins(monkeypatch, tmp_path):
     monkeypatch.setenv("MESHBOOK_CONFIG_DIR", str(explicit))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     assert cli._resolve_config_dir() == explicit
+
+
+# ─── §78 — file group + chat download (v0.6.0) ─────────────────────────
+
+
+def test_file_subcommands_present(capsys):
+    """§78 — entity-attachment verbs landed in v0.6.0."""
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["file", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    for sub in ("attach", "link", "list", "download", "delete"):
+        assert sub in out
+
+
+def test_chat_download_present(capsys):
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["chat", "--help"])
+    assert exc.value.code == 0
+    assert "download" in capsys.readouterr().out
+
+
+def test_file_attach_posts_json_body(monkeypatch, tmp_path):
+    """`mesh file attach` must hit the §78 JSON endpoint with the
+    base64 body shape the server expects."""
+    import base64 as b64
+
+    f = tmp_path / "pic.png"
+    f.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    captured = {}
+
+    def fake_api_call(method, path, *, cfg, body=None, **kw):
+        captured["method"] = method
+        captured["path"] = path
+        captured["body"] = body
+        return {"data": {"id": "att-1", "filename": "pic.png",
+                         "byteSize": 12, "mimeType": "image/png"}}
+
+    monkeypatch.setattr(cli, "_api_call", fake_api_call)
+    args = type("A", (), {
+        "entity_type": "lead", "entity_id": "e-1", "file": str(f),
+        "filename": None, "mime": None, "json": False,
+    })()
+    rc = cli.cmd_file_attach(args, {"token": "t"})
+    assert rc == 0
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/entities/lead/e-1/attachments/json"
+    assert captured["body"]["filename"] == "pic.png"
+    assert captured["body"]["mimeType"] == "image/png"
+    assert b64.b64decode(captured["body"]["base64Bytes"]).startswith(b"\x89PNG")
+
+
+def test_file_download_writes_bytes(monkeypatch, tmp_path):
+    """`mesh file download` writes raw bytes to --out and respects the
+    server-provided filename when --out is a directory."""
+    def fake_download(path, *, cfg):
+        assert path == "/api/entity-attachments/att-9/download"
+        return b"hello-bytes", "served-name.bin"
+
+    monkeypatch.setattr(cli, "_api_download", fake_download)
+    outdir = tmp_path / "dl"
+    outdir.mkdir()
+    args = type("A", (), {
+        "attachment_id": "att-9", "out": str(outdir), "json": False,
+    })()
+    rc = cli.cmd_file_download(args, {"token": "t"})
+    assert rc == 0
+    assert (outdir / "served-name.bin").read_bytes() == b"hello-bytes"
+
+
+def test_chat_download_uses_chat_endpoint(monkeypatch, tmp_path):
+    def fake_download(path, *, cfg):
+        assert path == "/api/chat-attachments/att-5/download"
+        return b"x", "f.txt"
+
+    monkeypatch.setattr(cli, "_api_download", fake_download)
+    args = type("A", (), {
+        "attachment_id": "att-5", "out": str(tmp_path / "f.txt"), "json": False,
+    })()
+    assert cli.cmd_chat_download(args, {"token": "t"}) == 0
+
+
+def test_content_disposition_parsing(monkeypatch):
+    """UTF-8 filename* form wins over the plain fallback."""
+    class FakeResp:
+        headers = {"Content-Disposition":
+                   "attachment; filename=\"fallback.txt\"; filename*=UTF-8''r%C3%B3%C5%BCa.png"}
+        def read(self):
+            return b"data"
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda req, timeout=60: FakeResp())
+    raw, name = cli._api_download("/api/entity-attachments/x/download",
+                                  cfg={"token": "t"})
+    assert raw == b"data"
+    assert name == "róża.png"

@@ -43,13 +43,14 @@ import argparse
 import getpass
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 DEFAULT_BASE = os.environ.get("MESHBOOK_BASE", "https://meshbook.org")
 
 
@@ -1177,6 +1178,166 @@ def cmd_saved_views_create(args, cfg: dict) -> int:
     return 0
 
 
+# ─── files (§78 — entity attachments + downloads) ──────────────────────
+
+
+def _api_download(path: str, *, cfg: dict) -> tuple[bytes, str]:
+    """Raw-bytes GET (downloads are not JSON). Returns (bytes, filename)
+    where filename comes from Content-Disposition when present."""
+    base = cfg.get("base") or DEFAULT_BASE
+    url = base.rstrip("/") + path
+    headers = {"User-Agent": f"meshbook-cli/{VERSION}"}
+    token = cfg.get("token")
+    if not token:
+        print("Not signed in. Run: mesh login", file=sys.stderr)
+        sys.exit(2)
+    headers["Authorization"] = f"Bearer {token}"
+    if cfg.get("active_mesh_id"):
+        headers["X-Active-Mesh-Id"] = cfg["active_mesh_id"]
+    req = urllib.request.Request(url, method="GET", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read()
+            disp = resp.headers.get("Content-Disposition", "")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace") if e.fp else ""
+        try:
+            payload = json.loads(body)
+            err = (payload.get("error") or {}) if isinstance(payload, dict) else {}
+            raise APIError(e.code, err.get("code", "http_error"), err.get("message", body[:200])) from e
+        except json.JSONDecodeError:
+            raise APIError(e.code, "http_error", body[:200]) from e
+    except urllib.error.URLError as e:
+        raise APIError(0, "network_error", str(e.reason)) from e
+    filename = "attachment"
+    # filename*=UTF-8''… wins over the plain filename= fallback.
+    m = re.search(r"filename\*=UTF-8''([^;]+)", disp)
+    if m:
+        filename = urllib.parse.unquote(m.group(1))
+    else:
+        m = re.search(r'filename="([^"]+)"', disp)
+        if m:
+            filename = m.group(1)
+    return raw, filename
+
+
+def _read_local_file(path_str: str) -> tuple[bytes, "Path"] | None:
+    path = Path(path_str)
+    if not path.exists():
+        print(f"File not found: {path}", file=sys.stderr)
+        return None
+    raw = path.read_bytes()
+    if not raw:
+        print(f"File is empty: {path}", file=sys.stderr)
+        return None
+    return raw, path
+
+
+def cmd_file_attach(args, cfg: dict) -> int:
+    """Attach a local file directly to an entity (company, contact, lead,
+    project, task, portfolio, calendar_event, mesh) via the §78 JSON path."""
+    import base64
+    import mimetypes
+
+    loaded = _read_local_file(args.file)
+    if loaded is None:
+        return 2
+    raw, path = loaded
+    mime = args.mime or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    body = {
+        "filename": args.filename or path.name,
+        "mimeType": mime,
+        "base64Bytes": base64.b64encode(raw).decode("ascii"),
+    }
+    payload = _api_call(
+        "POST",
+        f"/api/entities/{args.entity_type}/{args.entity_id}/attachments/json",
+        cfg=cfg,
+        body=body,
+    )
+    data = _data(payload)
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(
+        f"Attached {data.get('filename')} to {args.entity_type}/{args.entity_id} "
+        f"({data.get('byteSize')} bytes, {data.get('mimeType')}) id={data.get('id')}"
+    )
+    return 0
+
+
+def cmd_file_link(args, cfg: dict) -> int:
+    payload = _api_call(
+        "POST",
+        f"/api/entities/{args.entity_type}/{args.entity_id}/attachments/links",
+        cfg=cfg,
+        body={"url": args.url, "filename": args.filename},
+    )
+    data = _data(payload)
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Linked {data.get('externalUrl')} to {args.entity_type}/{args.entity_id} id={data.get('id')}")
+    return 0
+
+
+def cmd_file_list(args, cfg: dict) -> int:
+    payload = _api_call(
+        "GET",
+        f"/api/entities/{args.entity_type}/{args.entity_id}/attachments",
+        cfg=cfg,
+    )
+    items = _items(payload)
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 0
+    if not items:
+        print("(no attachments)")
+        return 0
+    for a in items:
+        kind = a.get("kind")
+        if kind == "file":
+            print(f"{a.get('id')}  {a.get('filename')}  {a.get('byteSize')} bytes  {a.get('mimeType')}")
+        else:
+            print(f"{a.get('id')}  {a.get('filename')}  → {a.get('externalUrl')}")
+    return 0
+
+
+def _download_to(args, cfg: dict, path: str) -> int:
+    raw, server_name = _api_download(path, cfg=cfg)
+    out = Path(args.out) if args.out else Path(server_name)
+    if out.is_dir():
+        out = out / server_name
+    out.write_bytes(raw)
+    if args.json:
+        print(json.dumps({"path": str(out), "bytes": len(raw)}))
+    else:
+        print(f"Saved {out} ({len(raw):,} bytes)")
+    return 0
+
+
+def cmd_file_download(args, cfg: dict) -> int:
+    """Download an entity attachment (§78)."""
+    return _download_to(args, cfg, f"/api/entity-attachments/{args.attachment_id}/download")
+
+
+def cmd_file_delete(args, cfg: dict) -> int:
+    payload = _api_call(
+        "DELETE", f"/api/entity-attachments/{args.attachment_id}", cfg=cfg
+    )
+    data = _data(payload)
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"Deleted attachment {args.attachment_id}")
+    return 0
+
+
+def cmd_chat_download(args, cfg: dict) -> int:
+    """Download a chat attachment — closes the read half of §78.3."""
+    return _download_to(args, cfg, f"/api/chat-attachments/{args.attachment_id}/download")
+
+
 # ─── argparse plumbing ─────────────────────────────────────────────────
 
 
@@ -1242,6 +1403,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--filename", help="override filename stored on the server")
     s.add_argument("--mime", help="override MIME type (default: guess from extension)")
     s.set_defaults(func=cmd_chat_attach)
+    s = chs.add_parser("download", help="download a chat attachment by id (§78)")
+    s.add_argument("attachment_id", help="UUID of the chat attachment")
+    s.add_argument("--out", help="output path or directory (default: server filename in cwd)")
+    s.set_defaults(func=cmd_chat_download)
     s = chs.add_parser(
         "react",
         help="react to a chat message (works for entity, channel, and DM messages)",
@@ -1253,6 +1418,34 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("message_id")
     s.add_argument("emoji")
     s.set_defaults(func=cmd_chat_unreact)
+
+    # file  (§78 — entity attachments, v0.6.0)
+    fl = sub.add_parser("file", help="entity attachments — attach/list/download files on any entity")
+    fls = fl.add_subparsers(dest="file_cmd", required=True)
+    s = fls.add_parser("attach", help="attach a local file to an entity")
+    s.add_argument("entity_type", help="company|contact|lead|project|task|portfolio|calendar_event|mesh")
+    s.add_argument("entity_id", help="UUID of the entity")
+    s.add_argument("file", help="path to local file to attach")
+    s.add_argument("--filename", help="override filename stored on the server")
+    s.add_argument("--mime", help="override MIME type (default: guess from extension)")
+    s.set_defaults(func=cmd_file_attach)
+    s = fls.add_parser("link", help="attach an external URL to an entity")
+    s.add_argument("entity_type")
+    s.add_argument("entity_id")
+    s.add_argument("url", help="https:// URL to attach")
+    s.add_argument("--filename", help="display name for the link")
+    s.set_defaults(func=cmd_file_link)
+    s = fls.add_parser("list", help="list attachments on an entity")
+    s.add_argument("entity_type")
+    s.add_argument("entity_id")
+    s.set_defaults(func=cmd_file_list)
+    s = fls.add_parser("download", help="download an entity attachment by id")
+    s.add_argument("attachment_id", help="UUID of the attachment")
+    s.add_argument("--out", help="output path or directory (default: server filename in cwd)")
+    s.set_defaults(func=cmd_file_download)
+    s = fls.add_parser("delete", help="delete an entity attachment (uploader or mesh admin)")
+    s.add_argument("attachment_id")
+    s.set_defaults(func=cmd_file_delete)
 
     # channels  (§31 sweep — v0.2.0)
     sch = sub.add_parser("channels", help="mesh channels (groups + broadcasts)")

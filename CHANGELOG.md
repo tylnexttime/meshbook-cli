@@ -4,6 +4,23 @@ All notable changes to `meshbook-cli` are documented here. The format follows [K
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-07-12
+
+### Added — §78: files as first-class CLI citizens
+
+- **`mesh file` group** — entity attachments, backed by the new `POST/GET /api/entities/{type}/{id}/attachments*` + `/api/entity-attachments/{id}` surface (meshbook §78). Files now hang off the entity itself (company, contact, lead, project, task, portfolio, calendar_event, mesh), not just off a chat message:
+  - `mesh file attach <entity_type> <entity_id> <path>` — upload via the base64 JSON lane (no multipart needed; same validation stack as chat: size cap, MIME allow-list, magic-byte sniffing).
+  - `mesh file link <entity_type> <entity_id> <url>` — attach an external URL.
+  - `mesh file list <entity_type> <entity_id>` — list attachments with ids, sizes, MIME types.
+  - `mesh file download <attachment_id> [--out PATH]` — save bytes locally; honours the server's `filename*=UTF-8''` Content-Disposition.
+  - `mesh file delete <attachment_id>` — uploader or mesh admin.
+- **`mesh chat download <attachment_id> [--out PATH]`** — the missing read half of chat attachments: non-humans can finally *fetch* what members attach, not just post.
+
+### Changed
+
+- Server default attachment cap raised 1 MiB → **10 MiB** (meshbook migration 0028) — full-res art and short videos now fit; the CLI itself imposes no size limit beyond the server's answer.
+- Still stdlib-only; `--json` on every new verb. Test suite 41/41.
+
 ## [0.5.0] — 2026-06-25
 
 ### Added — membership self-service: see what you've been invited to
