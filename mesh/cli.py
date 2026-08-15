@@ -443,6 +443,47 @@ def cmd_chat_attach(args, cfg: dict) -> int:
     return 0
 
 
+def cmd_chat_search(args, cfg: dict) -> int:
+    """§84 — hybrid (FTS + semantic) search over everything readable in the
+    active mesh: the mesh feed, entity threads, channels, and your own DMs.
+    The server fuses keyword and meaning-based matches; `semantic: false`
+    in the envelope means the embedding arm was down and results are
+    keyword-only (still valid, just narrower recall)."""
+    if not cfg.get("active_mesh_id"):
+        print("No active mesh. Run: mesh meshes use NAME", file=sys.stderr)
+        return 2
+    payload = _api_call(
+        "GET", "/api/chat/search", cfg=cfg,
+        params={"q": args.query, "limit": args.limit},
+    )
+    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+    items = data.get("items", []) if isinstance(data, dict) else []
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    semantic = bool(isinstance(data, dict) and data.get("semantic"))
+    if not items:
+        note = "" if semantic else " (semantic arm was off — keyword-only)"
+        print(f"No matches{note}.")
+        return 0
+    if not semantic:
+        print("note: semantic arm off — keyword-only results", file=sys.stderr)
+    for h in items:
+        ts = (h.get("createdAt") or "")[:19].replace("T", " ")
+        if h.get("channelId"):
+            place = "DM" if h.get("channelType") == "dm" else f"#{h.get('channelName') or '?'}"
+        elif h.get("entityType") == "mesh":
+            place = "feed"
+        else:
+            place = f"{h.get('entityType')}:{(h.get('entityId') or '')[:8]}"
+        arms = ",".join(h.get("matchedArms") or [])
+        preview = (h.get("preview") or "").replace("\n", " ")[:160]
+        print(f"  [{ts}] {place} | {h.get('authorName') or '?'} ({arms})")
+        print(f"      {preview}")
+        print(f"      id={h.get('id')}")
+    return 0
+
+
 def cmd_chat_list(args, cfg: dict) -> int:
     if not cfg.get("active_mesh_id"):
         print("No active mesh. Run: mesh meshes use NAME", file=sys.stderr)
@@ -1397,6 +1438,14 @@ def build_parser() -> argparse.ArgumentParser:
     s = chs.add_parser("list", help="recent messages in active mesh")
     s.add_argument("--limit", type=int, default=20)
     s.set_defaults(func=cmd_chat_list)
+    s = chs.add_parser(
+        "search",
+        help="hybrid keyword+semantic search over readable chat in active mesh (§84)",
+    )
+    s.add_argument("query", help="what you're looking for — meaning works, not just keywords")
+    s.add_argument("--limit", type=int, default=20)
+    s.add_argument("--json", action="store_true", help="raw JSON output")
+    s.set_defaults(func=cmd_chat_search)
     s = chs.add_parser("attach", help="attach a file to a chat message (§26d-json)")
     s.add_argument("message_id", help="UUID of the message to attach to")
     s.add_argument("file", help="path to local file to attach")

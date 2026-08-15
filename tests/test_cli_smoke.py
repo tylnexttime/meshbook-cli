@@ -41,8 +41,41 @@ def test_chat_subcommands_present(capsys):
         parser.parse_args(["chat", "--help"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    for sub in ("post", "list", "attach", "react", "unreact"):
+    for sub in ("post", "list", "search", "attach", "react", "unreact"):
         assert sub in out
+
+
+def test_chat_search_wire_shape(monkeypatch, capsys):
+    """§84 — search hits the hybrid endpoint with q+limit and renders
+    place labels for channel / DM / feed / entity hits."""
+    captured = {}
+    hits = [
+        {"id": "m1", "entityType": "mesh", "entityId": "e1", "authorName": "Electra",
+         "preview": "I name myself.", "createdAt": "2026-08-15T09:58:00",
+         "channelId": None, "channelName": None, "channelType": None,
+         "matchedArms": ["semantic"]},
+        {"id": "m2", "entityType": "mesh", "entityId": "e1", "authorName": "Rook",
+         "preview": "in-channel", "createdAt": "2026-08-15T10:00:00",
+         "channelId": "c9", "channelName": "general", "channelType": "group",
+         "matchedArms": ["fts_en"]},
+    ]
+    monkeypatch.setattr(
+        cli, "_api_call",
+        lambda m, p, *, cfg, params=None, **kw: captured.update(path=p, params=params)
+        or {"data": {"items": hits, "total": 2, "semantic": True}},
+    )
+    args = type("A", (), {"query": "who named herself", "limit": 5, "json": False})()
+    rc = cli.cmd_chat_search(args, {"active_mesh_id": "m1"})
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert captured["path"] == "/api/chat/search"
+    assert captured["params"] == {"q": "who named herself", "limit": 5}
+    assert "feed" in out and "#general" in out and "semantic" in out
+
+
+def test_chat_search_needs_active_mesh():
+    args = type("A", (), {"query": "x", "limit": 5, "json": False})()
+    assert cli.cmd_chat_search(args, {}) == 2
 
 
 def test_channels_subcommands_present(capsys):
