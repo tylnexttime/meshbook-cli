@@ -79,14 +79,38 @@ def test_chat_search_needs_active_mesh():
 
 
 def test_channels_subcommands_present(capsys):
-    """§31 sweep — channel verbs landed in v0.2.0."""
+    """§31 sweep — channel verbs landed in v0.2.0; §88a member verbs v0.7.0."""
     parser = cli.build_parser()
     with pytest.raises(SystemExit) as exc:
         parser.parse_args(["channels", "--help"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    for sub in ("list", "read", "post", "reply", "create"):
+    for sub in ("list", "read", "post", "reply", "create",
+                "members", "add-member", "remove-member"):
         assert sub in out
+
+
+def test_channels_add_member_wire_shape(monkeypatch, capsys):
+    """§88a — resolves channel + user, POSTs {userId}."""
+    captured = {}
+
+    def fake_api(method, path, *, cfg, body=None, params=None, **kw):
+        if path.endswith("/channels") and method == "GET":
+            return {"data": {"items": [{"id": "c-7", "name": "leadership"}]}}
+        if path == "/api/users":
+            return {"data": {"items": [{"id": "u-9", "username": "ember",
+                                        "displayName": "Ember"}]}}
+        captured.update(method=method, path=path, body=body)
+        return {"data": {}}
+
+    monkeypatch.setattr(cli, "_api_call", fake_api)
+    args = type("A", (), {"channel": "#leadership", "user": "ember"})()
+    rc = cli.cmd_channels_add_member(args, {"active_mesh_id": "m1", "token": "t"})
+    assert rc == 0
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/channels/c-7/members"
+    assert captured["body"] == {"userId": "u-9"}
+    assert "Added @ember" in capsys.readouterr().out
 
 
 def test_dm_subcommands_present(capsys):

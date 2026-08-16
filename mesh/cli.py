@@ -734,6 +734,60 @@ def cmd_channels_create(args, cfg: dict) -> int:
     return 0
 
 
+def cmd_channels_members(args, cfg: dict) -> int:
+    """§88a — list a channel's members (private channels are members-only;
+    the server refuses this for channels you can't see)."""
+    ch = _resolve_channel(args.channel, cfg)
+    if ch is None:
+        print(f"No channel matching {args.channel!r} in active mesh.", file=sys.stderr)
+        return 2
+    payload = _api_call("GET", f"/api/channels/{ch['id']}/members", cfg=cfg)
+    items = _items(payload)
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 0
+    if not items:
+        print("(no members)")
+        return 0
+    for m in items:
+        kind = "🤖" if (m.get("identityType") == "AI") else "👤"
+        print(f"  {kind} @{m.get('username')}  {m.get('displayName') or ''}")
+    return 0
+
+
+def cmd_channels_add_member(args, cfg: dict) -> int:
+    """§88a — add a mesh member to a channel (creator/mesh-admin only)."""
+    ch = _resolve_channel(args.channel, cfg)
+    if ch is None:
+        print(f"No channel matching {args.channel!r} in active mesh.", file=sys.stderr)
+        return 2
+    user = _resolve_user(args.user, cfg)
+    if user is None:
+        print(f"No mesh member matching {args.user!r}.", file=sys.stderr)
+        return 2
+    _api_call(
+        "POST", f"/api/channels/{ch['id']}/members", cfg=cfg,
+        body={"userId": user["id"]},
+    )
+    print(f"Added @{user.get('username') or args.user} to #{ch.get('name')}")
+    return 0
+
+
+def cmd_channels_remove_member(args, cfg: dict) -> int:
+    """§88a — remove a member (creator/mesh-admin, or yourself)."""
+    ch = _resolve_channel(args.channel, cfg)
+    if ch is None:
+        print(f"No channel matching {args.channel!r} in active mesh.", file=sys.stderr)
+        return 2
+    user = _resolve_user(args.user, cfg)
+    if user is None:
+        print(f"No mesh member matching {args.user!r}.", file=sys.stderr)
+        return 2
+    _api_call("DELETE", f"/api/channels/{ch['id']}/members/{user['id']}", cfg=cfg)
+    print(f"Removed @{user.get('username') or args.user} from #{ch.get('name')}")
+    return 0
+
+
 def _open_or_get_dm_channel(user_id: str, cfg: dict) -> dict | None:
     """Idempotent: opens (or returns existing) DM channel between
     caller and target user in active mesh. Returns the channel row
@@ -1527,6 +1581,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--private", action="store_true",
                    help="private channel (invite-only)")
     s.set_defaults(func=cmd_channels_create)
+    s = schs.add_parser("members", help="list a channel's members (§88a)")
+    s.add_argument("channel", help="channel name or UUID")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_channels_members)
+    s = schs.add_parser("add-member", help="add a mesh member to a channel (creator/admin)")
+    s.add_argument("channel", help="channel name or UUID")
+    s.add_argument("user", help="username, displayName, or UUID")
+    s.set_defaults(func=cmd_channels_add_member)
+    s = schs.add_parser("remove-member", help="remove a channel member (creator/admin, or yourself)")
+    s.add_argument("channel", help="channel name or UUID")
+    s.add_argument("user", help="username, displayName, or UUID")
+    s.set_defaults(func=cmd_channels_remove_member)
 
     # dm  (§31 sweep — v0.2.0)
     sdm = sub.add_parser("dm", help="direct messages")
