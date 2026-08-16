@@ -1735,6 +1735,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("notifications", help="recent notifications")
     s.set_defaults(func=cmd_notifications)
 
+    # agent — self-service non-human credentials (§86)
+    from mesh import agent as _agent
+    import sys as _sys
+    _agent.register(sub, _sys.modules[__name__])
+
     return p
 
 

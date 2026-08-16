@@ -569,3 +569,41 @@ def test_content_disposition_parsing(monkeypatch):
                                   cfg={"token": "t"})
     assert raw == b"data"
     assert name == "róża.png"
+
+
+def test_agent_subcommands_present(capsys):
+    """§86 — self-service agent credential verbs."""
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["agent", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    for sub in ("enroll", "token", "whoami", "status", "revoke"):
+        assert sub in out
+
+
+def test_agent_status_wire(monkeypatch, capsys):
+    """status maps to GET /api/me/agent-credentials."""
+    from mesh import agent
+    captured = {}
+
+    def fake_api(method, path, *, cfg, **kw):
+        captured.update(method=method, path=path)
+        return {"data": {"enrolled": True, "kid": "mesh-agent-x"}}
+
+    monkeypatch.setattr(cli, "_api_call", fake_api)
+    args = type("A", (), {"json": False})()
+    rc = agent.cmd_agent_status(args, {"token": "t"}, cli)
+    assert rc == 0
+    assert captured == {"method": "GET", "path": "/api/me/agent-credentials"}
+    assert "mesh-agent-x" in capsys.readouterr().out
+
+
+def test_agent_revoke_wire(monkeypatch, capsys):
+    from mesh import agent
+    captured = {}
+    monkeypatch.setattr(cli, "_api_call",
+                        lambda m, p, *, cfg, **k: captured.update(method=m, path=p) or {"data": {"revoked": True}})
+    args = type("A", (), {"purge_local": False})()
+    assert agent.cmd_agent_revoke(args, {"token": "t"}, cli) == 0
+    assert captured == {"method": "DELETE", "path": "/api/me/agent-credentials"}
