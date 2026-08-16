@@ -50,7 +50,16 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.6.0"
+# Version comes from the installed package metadata (pyproject.toml is the
+# single source). The old hardcoded string sat at "0.6.0" through two
+# releases, which made `mesh --version` useless for detecting the exact
+# frozen-stale-copy failure mode it exists to catch (found 2026-08-17 during
+# the §86 rollout). Fallback covers uninstalled dev checkouts only.
+try:
+    from importlib.metadata import version as _pkg_version
+    VERSION = _pkg_version("meshbook-cli")
+except Exception:
+    VERSION = "0.0.0+uninstalled"
 DEFAULT_BASE = os.environ.get("MESHBOOK_BASE", "https://meshbook.org")
 
 
