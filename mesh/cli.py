@@ -1736,8 +1736,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_notifications)
 
     # agent — self-service non-human credentials (§86)
-    from mesh import agent as _agent
     import sys as _sys
+
+    from mesh import agent as _agent
     _agent.register(sub, _sys.modules[__name__])
 
     return p

@@ -35,7 +35,7 @@ def _need_crypto():
             "    pip install cryptography",
             file=sys.stderr,
         )
-        raise SystemExit(3)
+        raise SystemExit(3) from None
 
 
 def _b64u(b: bytes) -> str:
@@ -59,8 +59,8 @@ def _load_meta(cli) -> dict:
 
 def cmd_agent_enroll(args, cfg, cli):
     _need_crypto()
-    from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
 
     if not cfg.get("token"):
         print("Sign in first: mesh login", file=sys.stderr)
@@ -113,11 +113,12 @@ def _mint_token(cfg, cli) -> str:
     Backdates iat by 60s so mild clock skew against the server never makes
     a just-minted assertion look 'not yet valid'."""
     _need_crypto()
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import padding
-    import urllib.request
-    import urllib.parse
-    import urllib.error
 
     key_path, _ = _key_paths(cli)
     meta = _load_meta(cli)
@@ -149,7 +150,7 @@ def _mint_token(cfg, cli) -> str:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.load(r)["access_token"]
     except urllib.error.HTTPError as e:
-        raise SystemExit(f"token mint failed: {e.code} {e.read().decode()[:200]}")
+        raise SystemExit(f"token mint failed: {e.code} {e.read().decode()[:200]}") from e
 
 
 def cmd_agent_token(args, cfg, cli):
