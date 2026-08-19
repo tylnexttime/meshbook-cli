@@ -156,7 +156,8 @@ def test_channels_create_broadcast_severity_required_via_default(capsys, tmp_pat
 def test_resolve_channel_strips_hash(monkeypatch):
     """Channel resolution must strip a leading '#' (humans type `#bugs`,
     the underlying name is just `bugs`)."""
-    monkeypatch.setattr(cli, "_list_channels_raw", lambda cfg, mesh_id=None: [
+    monkeypatch.setattr(cli, "_list_channels_raw",
+                        lambda cfg, mesh_id=None, swallow_errors=False: [
         {"id": "ch-1", "name": "bugs"},
         {"id": "ch-2", "name": "general"},
     ])
@@ -607,3 +608,41 @@ def test_agent_revoke_wire(monkeypatch, capsys):
     args = type("A", (), {"purge_local": False})()
     assert agent.cmd_agent_revoke(args, {"token": "t"}, cli) == 0
     assert captured == {"method": "DELETE", "path": "/api/me/agent-credentials"}
+
+
+def test_list_channels_raw_raises_by_default(monkeypatch):
+    """An authorisation failure must NOT come back as an empty channel list.
+
+    Guards the 2026-08-20 fix (Wren, report A4): `_list_channels_raw` used to
+    swallow every APIError and return [], so `mesh channels list` rendered a
+    403 as "(no channels yet)". Leniency is now opt-in via swallow_errors,
+    which is what `_resolve_channel` actually wanted.
+    """
+    import pytest
+
+    def boom(*a, **k):
+        raise cli.APIError(403, "token_out_of_scope", "nope")
+
+    monkeypatch.setattr(cli, "_api_call", boom)
+    cfg = {"active_mesh_id": "m", "token": "t"}
+
+    with pytest.raises(cli.APIError):
+        cli._list_channels_raw(cfg)
+
+    assert cli._list_channels_raw(cfg, swallow_errors=True) == []
+
+
+def test_err_fields_unwraps_fastapi_detail():
+    """FastAPI's {"detail": {...}} must yield a real code/message, not raw JSON.
+
+    Guards the 2026-08-20 fix (Wren, report A2): only {"error": {...}} was
+    unwrapped, so every CRM verb printed the raw envelope at the user.
+    """
+    code, msg = cli._err_fields(
+        {"detail": {"code": "no_active_mesh", "message": "Select a mesh."}}, "RAW")
+    assert (code, msg) == ("no_active_mesh", "Select a mesh.")
+    # our own shape still works
+    code, msg = cli._err_fields({"error": {"code": "x", "message": "y"}}, "RAW")
+    assert (code, msg) == ("x", "y")
+    # unparseable falls back to the raw body, not an exception
+    assert cli._err_fields("not a dict", "RAW")[0] == "http_error"

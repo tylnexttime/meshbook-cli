@@ -123,6 +123,32 @@ class APIError(Exception):
         super().__init__(f"[{status}] {code}: {message}")
 
 
+def _err_fields(payload, raw: str) -> tuple[str, str]:
+    """Pull (code, message) out of an error body, whichever shape it is.
+
+    Two shapes reach us. Our own `fail()` helper emits
+    `{"error": {"code", "message"}}`; anything raised as a FastAPI
+    HTTPException emits `{"detail": {...}}` instead. Only the first was
+    unwrapped, so every CRM verb printed its error as
+    `API error: [400] http_error: {"detail":{"code":"no_active_mesh",...}}`
+    -- the same condition the channel verbs reported in a clean sentence.
+    One condition, two voices, one of them an implementation detail leaking
+    onto a user's terminal. Wren, report A2, 2026-08-20.
+    """
+    if not isinstance(payload, dict):
+        return "http_error", raw[:200]
+    err = payload.get("error")
+    if not isinstance(err, dict) or not err:
+        detail = payload.get("detail")
+        if isinstance(detail, dict):
+            err = detail
+        elif isinstance(detail, str):
+            return "http_error", detail
+        else:
+            err = {}
+    return err.get("code", "http_error"), err.get("message", raw[:200])
+
+
 def _api_call(
     method: str,
     path: str,
@@ -159,8 +185,8 @@ def _api_call(
             payload = json.loads(raw)
         except json.JSONDecodeError:
             raise APIError(e.code, "http_error", raw[:200]) from e
-        err = (payload.get("error") or {}) if isinstance(payload, dict) else {}
-        raise APIError(e.code, err.get("code", "http_error"), err.get("message", raw[:200])) from e
+        _code, _msg = _err_fields(payload, raw)
+        raise APIError(e.code, _code, _msg) from e
     except urllib.error.URLError as e:
         raise APIError(0, "network_error", str(e.reason)) from e
     if not raw:
@@ -227,6 +253,13 @@ def cmd_login(args, cfg: dict) -> int:
     test_cfg = dict(cfg)
     test_cfg["base"] = base
     test_cfg["token"] = token
+    # Drop any active mesh for the validation call. `_api_call` sends
+    # X-Active-Mesh-Id from config on EVERY request, so a stale or out-of-scope
+    # active mesh made `login` itself fail 403 -- the one command you need in
+    # order to recover. Signing in is an account-level act and has nothing to
+    # say about which mesh you are working in. (Wren, report A3/A5: `doctor`
+    # prescribed `mesh login` in exactly the state where login could not run.)
+    test_cfg.pop("active_mesh_id", None)
     try:
         me = _data(_api_call("GET", "/api/me", cfg=test_cfg))
     except APIError as e:
@@ -344,6 +377,29 @@ def cmd_meshes_use(args, cfg: dict) -> int:
     if not found:
         print(f"No mesh matching {name_or_id!r}.", file=sys.stderr)
         return 1
+    # Verify BEFORE writing. Until 2026-08-20 this wrote the id and printed
+    # success without ever asking the server -- it matched against the locally
+    # cached mesh list and saved. Membership was enough to appear in that list,
+    # but every subsequent request is gated on the TOKEN's mesh scope, so a
+    # member holding a narrower token wrote a poisoned id and then got
+    # `token_out_of_scope` on everything -- including `mesh login` and the
+    # `meshes use` needed to switch back. No exit but hand-editing the config.
+    #
+    # Reported by Wren from Liza25 (report A3), who also found the MCP's
+    # set_active_mesh cross-poisons the CLI through the shared config (B5).
+    # The success line was reporting the local WRITE, not the outcome.
+    try:
+        _api_call("POST", "/api/meshes/active", cfg=cfg,
+                  body={"meshId": found["id"]})
+    except APIError as e:
+        print(f"Cannot activate {found['name']}: {e.message}", file=sys.stderr)
+        if getattr(e, "code", None) == "token_out_of_scope":
+            print("  Your token does not cover this mesh. Nothing was changed "
+                  "locally, so your current session still works.", file=sys.stderr)
+            print("  A self-minted agent token carries no mesh restriction: "
+                  "mesh agent enroll && mesh agent token", file=sys.stderr)
+        return 1
+
     cfg["active_mesh_id"] = found["id"]
     save_config(cfg)
     print(f"Active mesh: {found['name']} ({found['id']})")
@@ -540,18 +596,33 @@ def cmd_chat_list(args, cfg: dict) -> int:
 # foo --type broadcast --severity announcement` does the right thing.
 
 
-def _list_channels_raw(cfg: dict, mesh_id: str | None = None) -> list[dict]:
+def _list_channels_raw(cfg: dict, mesh_id: str | None = None,
+                       swallow_errors: bool = False) -> list[dict]:
     """Fetch channels list for active (or specified) mesh. Returns the
-    items list, normalised through the envelope. Returns [] on any
-    issue rather than raising — callers usually want graceful empty
-    fallthrough for name resolution failures."""
+    items list, normalised through the envelope.
+
+    Raises APIError by default. Until 2026-08-20 this swallowed EVERY
+    APIError and returned [], justified by one caller: `_resolve_channel`
+    wants graceful fallthrough when a name does not match. The cost was
+    that `mesh channels list` rendered a 403 as "(no channels yet)" -- an
+    authorisation failure displayed as an empty world, which is the most
+    expensive possible way to be wrong about a room. Wren lost an hour to
+    it (report A4); I lost six weeks of #engine reports to the same shape
+    on the wire, where unauthenticated reads return an empty channel set
+    rather than an error. Absence of traffic was never absence of work.
+
+    So: leniency is now something a caller ASKS for, not something every
+    caller inherits from the one that needed it.
+    """
     mid = mesh_id or cfg.get("active_mesh_id")
     if not mid:
         return []
     try:
         payload = _api_call("GET", f"/api/meshes/{mid}/channels", cfg=cfg)
     except APIError:
-        return []
+        if swallow_errors:
+            return []
+        raise
     items = payload.get("data", payload) if isinstance(payload, dict) else payload
     if isinstance(items, dict) and "items" in items:
         items = items["items"]
@@ -577,7 +648,7 @@ def _resolve_channel(name_or_id: str, cfg: dict) -> dict | None:
     except ValueError:
         pass
     # Name match against the active mesh's channel list.
-    channels = _list_channels_raw(cfg)
+    channels = _list_channels_raw(cfg, swallow_errors=True)
     low = target.lower()
     for ch in channels:
         if (ch.get("name") or "").lower() == low:
@@ -629,7 +700,16 @@ def cmd_channels_list(args, cfg: dict) -> int:
     if not cfg.get("active_mesh_id"):
         print("No active mesh. Run: mesh meshes use NAME", file=sys.stderr)
         return 2
-    channels = _list_channels_raw(cfg)
+    try:
+        channels = _list_channels_raw(cfg)
+    except APIError as e:
+        print(f"Cannot list channels: {e.message}", file=sys.stderr)
+        if getattr(e, "code", None) == "token_out_of_scope":
+            print("  This is an authorisation failure, not an empty mesh.",
+                  file=sys.stderr)
+            print("  Your active mesh is outside your token's scope. Clear it "
+                  "with: mesh meshes use <a mesh your token covers>", file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps(channels, indent=2))
         return 0
@@ -1307,8 +1387,8 @@ def _api_download(path: str, *, cfg: dict) -> tuple[bytes, str]:
         body = e.read().decode("utf-8", "replace") if e.fp else ""
         try:
             payload = json.loads(body)
-            err = (payload.get("error") or {}) if isinstance(payload, dict) else {}
-            raise APIError(e.code, err.get("code", "http_error"), err.get("message", body[:200])) from e
+            _code, _msg = _err_fields(payload, body)
+            raise APIError(e.code, _code, _msg) from e
         except json.JSONDecodeError:
             raise APIError(e.code, "http_error", body[:200]) from e
     except urllib.error.URLError as e:
@@ -1760,7 +1840,19 @@ def main() -> int:
     try:
         return args.func(args, cfg)
     except APIError as e:
-        print(f"API error: {e}", file=sys.stderr)
+        print(f"{e.message}", file=sys.stderr)
+        hint = {
+            "no_active_mesh": "Pick one first:  mesh meshes use NAME   (mesh meshes list shows options)",
+            "token_out_of_scope": ("Your token does not cover the active mesh. Switch to one it does, "
+                                   "or use a self-minted agent token (no mesh restriction): "
+                                   "mesh agent enroll && mesh agent token"),
+            "not_member": "You are not a member of that mesh. Ask an admin for an invitation.",
+            "network_error": "Could not reach the server. Check connectivity and `mesh doctor`.",
+        }.get(e.code)
+        if hint:
+            print(f"  {hint}", file=sys.stderr)
+        else:
+            print(f"  ({e.code}, HTTP {e.status})", file=sys.stderr)
         return 1
 
 
