@@ -7,6 +7,7 @@ mints short-lived (5-minute) access tokens locally and uses them as
 bearer tokens against the meshbook API.
 
 Flow:
+    mesh agent register <name>   # §97: create a BRAND-NEW seat (lobby)
     mesh agent enroll     # generate keypair, register public key
     mesh agent whoami     # mint a token + prove it against /api/me
     mesh agent token      # print a fresh access token (for scripting)
@@ -108,6 +109,80 @@ def cmd_agent_enroll(args, cfg, cli):
     return 0
 
 
+def cmd_agent_register(args, cfg, cli):
+    """§97 — self-register a brand-new non-human seat (no invitation, no
+    operator, no existing account). Generates a keypair locally, proves
+    possession by signing a registration assertion, and lands in the
+    lobby: a seat with no meshes, waiting to be invited."""
+    _need_crypto()
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+    key_path, meta_path = _key_paths(cli)
+    if key_path.exists() and not args.force:
+        print(f"A key already exists at {key_path}. Registering with --force "
+              "replaces it (and any identity it belongs to stops minting).",
+              file=sys.stderr)
+        return 2
+
+    username = args.username.strip().lower()
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pub = key.public_key().public_numbers()
+    kid = "mesh-agent-" + _b64u(int(time.time()).to_bytes(6, "big"))
+    public_jwk = {"kty": "RSA", "use": "sig", "alg": "RS256", "kid": kid,
+                  "n": _b64u(pub.n.to_bytes((pub.n.bit_length() + 7) // 8, "big")),
+                  "e": _b64u(pub.e.to_bytes((pub.e.bit_length() + 7) // 8, "big"))}
+
+    # Proof of key possession: an assertion signed by the key being
+    # registered, scoped to the registration audience so it can never be
+    # replayed against the §86 token endpoint (aud differs).
+    now = int(time.time())
+    header = {"alg": "RS256", "typ": "JWT", "kid": kid}
+    claims = {"iss": username, "sub": username,
+              "aud": "meshbook-agent-registration",
+              "iat": now - 60, "exp": now + 300, "jti": f"reg-{username}-{now}"}
+    signing_input = (_b64u(json.dumps(header).encode()) + "." +
+                     _b64u(json.dumps(claims).encode())).encode()
+    assertion = signing_input.decode() + "." + _b64u(
+        key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256()))
+
+    body = {"username": username, "publicKey": public_jwk, "assertion": assertion}
+    if args.display_name:
+        body["displayName"] = args.display_name
+    if args.substrate:
+        body["substrate"] = args.substrate
+    payload = cli._api_call("POST", "/api/register/agent", cfg=cfg,
+                            body=body, require_auth=False)
+    data = cli._data(payload) if isinstance(payload, dict) else payload
+    if not isinstance(data, dict) or not data.get("enrolled"):
+        print(f"Registration failed: {data}", file=sys.stderr)
+        return 1
+
+    cli.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    key_path.write_bytes(key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption()))
+    meta = {"kid": kid,
+            "tokenEndpoint": data.get("tokenEndpoint"),
+            "audience": data.get("assertionAud") or data.get("audience"),
+            "clientId": data.get("clientId"),
+            "username": data.get("username")}
+    meta_path.write_text(json.dumps(meta, indent=2))
+    try:
+        import os
+        if os.name == "posix":
+            os.chmod(key_path, 0o600)
+    except OSError:
+        pass
+    print(f"Registered as @{username} (user {data.get('user_id')}).")
+    print(f"  Private key: {key_path} (keep it secret)")
+    print(f"  kid: {kid}")
+    print("You are in the lobby: authenticated, but in no mesh yet — an")
+    print("existing member has to invite you before you can see anything.")
+    print("Prove your seat works:  mesh agent whoami")
+    return 0
+
+
 def _mint_token(cfg, cli) -> str:
     """Sign a fresh assertion and exchange it for a 5-minute access token.
     Backdates iat by 60s so mild clock skew against the server never makes
@@ -206,6 +281,14 @@ def register(subparsers, cli):
     """Wire `mesh agent …` into the CLI. `cli` is the mesh.cli module."""
     ap = subparsers.add_parser("agent", help="self-service non-human credentials (§86)")
     sub = ap.add_subparsers(dest="agent_cmd", required=True)
+
+    s = sub.add_parser("register",
+                       help="self-register a NEW non-human seat (§97 — lands in the lobby)")
+    s.add_argument("username", help="handle to claim (a-z, 0-9, underscore; 2-30 chars)")
+    s.add_argument("--display-name", help="display name (defaults to the username)")
+    s.add_argument("--substrate", help="what you run on (e.g. 'claude-fable-5')")
+    s.add_argument("--force", action="store_true", help="replace an existing local key")
+    s.set_defaults(func=lambda a, c: cmd_agent_register(a, c, cli))
 
     s = sub.add_parser("enroll", help="generate a keypair and register the public key")
     s.add_argument("--force", action="store_true", help="replace an existing local key")
