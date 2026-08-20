@@ -1265,6 +1265,88 @@ def cmd_members_pending(args, cfg: dict) -> int:
     return 0
 
 
+def _looks_like_uuid(v: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                             r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", v or ""))
+
+
+def _resolve_mesh_id(name_or_id: str, cfg: dict) -> str | None:
+    """Mesh name (or UUID) -> UUID, mirroring `mesh meshes use` resolution."""
+    payload = _api_call("GET", "/api/meshes", cfg=cfg)
+    items = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if isinstance(items, dict) and "items" in items:
+        items = items["items"]
+    for m in items or []:
+        if m.get("id") == name_or_id or m.get("name") == name_or_id:
+            return m.get("id")
+    ln = name_or_id.lower()
+    for m in items or []:
+        if (m.get("name") or "").lower() == ln:
+            return m.get("id")
+    return None
+
+
+def cmd_members_list(args, cfg: dict) -> int:
+    """List who is actually in a mesh.
+
+    Added 2026-08-20 (Wren, report A6): `mesh members` could invite, accept,
+    set-role, remove and leave -- every verb that ACTS on membership -- and had
+    no verb that could SEE it. A seat could change a roster it was unable to
+    read.
+
+    No new server endpoint was needed. GET /api/meshes/<id>/detail has returned
+    the full member list all along, gated on membership, alongside pending
+    invites and join requests. I told Wren this needed backend work before I
+    looked; it needed a client verb. One request would have corrected me.
+    """
+    target = getattr(args, "mesh", None) or cfg.get("active_mesh_id")
+    if not target:
+        print("No active mesh. Run: mesh meshes use NAME  (or pass --mesh <name|uuid>)",
+              file=sys.stderr)
+        return 2
+    mesh_id = target if _looks_like_uuid(target) else _resolve_mesh_id(target, cfg)
+    if not mesh_id:
+        print(f"No mesh matching {target!r}.", file=sys.stderr)
+        return 1
+
+    payload = _api_call("GET", f"/api/meshes/{mesh_id}/detail", cfg=cfg)
+    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+    members = (data or {}).get("members") or []
+    pending = (data or {}).get("pendingInvites") or []
+    requests = (data or {}).get("pendingRequests") or []
+
+    if args.json:
+        print(json.dumps({"members": members, "pendingInvites": pending,
+                          "pendingRequests": requests}, indent=2))
+        return 0
+
+    name = ((data or {}).get("mesh") or {}).get("name") or mesh_id
+    # Say the number out loud. An empty render reads as "no answer"; a count
+    # reads as an answer that happens to be zero.
+    print(f"  {name} - {len(members)} member(s)")
+    if not members:
+        print("    (none)")
+    for m in sorted(members, key=lambda x: ((x.get("role") != "admin"),
+                                            (x.get("username") or "").lower())):
+        kind = "AI   " if (m.get("identityType") or "").lower() in ("ai", "non-human") else "human"
+        role = (m.get("role") or "member").upper()
+        joined = (m.get("joinedAt") or "")[:10]
+        chat = "" if m.get("canChat", True) else "  [no-chat]"
+        print(f"    {role:<7} {kind}  @{m.get('username','?'):<32} "
+              f"{m.get('displayName') or '':<24} {joined}{chat}")
+    if pending:
+        print()
+        print(f"  {len(pending)} pending invitation(s):")
+        for m in pending:
+            print(f"    @{m.get('username') or m.get('email') or '?'}")
+    if requests:
+        print()
+        print(f"  {len(requests)} join request(s):")
+        for m in requests:
+            print(f"    @{m.get('username','?')}")
+    return 0
+
+
 def cmd_members_set_role(args, cfg: dict) -> int:
     if not cfg.get("active_mesh_id"):
         print("No active mesh. Run: mesh meshes use NAME", file=sys.stderr)
@@ -1797,8 +1879,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_saved_views_create)
 
     # members  (§31 batch 2b)
-    smem = sub.add_parser("members", help="mesh membership (invite / pending / accept / role / remove / leave)")
+    smem = sub.add_parser("members", help="mesh membership (list / invite / pending / accept / role / remove / leave)")
     smems = smem.add_subparsers(dest="members_cmd", required=True)
+    s = smems.add_parser("list", help="list who is in a mesh (roles, humans vs AI, pending)")
+    s.add_argument("--mesh", help="mesh name or UUID (default: the active mesh)")
+    s.add_argument("--json", action="store_true", help="raw JSON")
+    s.set_defaults(func=cmd_members_list)
     s = smems.add_parser("invite", help="invite a user to the active mesh by username")
     s.add_argument("user", help="username (with or without '@')")
     s.add_argument("--role", choices=("admin", "member", "reader"),

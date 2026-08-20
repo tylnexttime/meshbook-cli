@@ -646,3 +646,33 @@ def test_err_fields_unwraps_fastapi_detail():
     assert (code, msg) == ("x", "y")
     # unparseable falls back to the raw body, not an exception
     assert cli._err_fields("not a dict", "RAW")[0] == "http_error"
+
+
+def test_members_list_reads_the_detail_endpoint(monkeypatch, capsys):
+    """Wren, report A6: members could be invited/removed but never listed.
+
+    The fix needed no server work - /api/meshes/<id>/detail already carried the
+    roster. This asserts the verb reads THAT endpoint and prints a count, so a
+    future refactor cannot quietly turn it into a silent empty render.
+    """
+    seen = []
+
+    def fake(method, path, *, cfg, **kw):
+        seen.append(path)
+        return {"data": {
+            "mesh": {"name": "The Tyl Mesh"},
+            "members": [
+                {"username": "wren", "displayName": "Wren", "role": "member",
+                 "identityType": "ai", "joinedAt": "2026-07-22"},
+            ],
+            "pendingInvites": [], "pendingRequests": [],
+        }}
+
+    monkeypatch.setattr(cli, "_api_call", fake)
+    args = type("A", (), {"mesh": None, "json": False})()
+    rc = cli.cmd_members_list(args, {"active_mesh_id": "bffa668c-a035-4d0d-95df-a49fc2ea8a2d"})
+    assert rc == 0
+    assert any(p.endswith("/detail") for p in seen), seen
+    out = capsys.readouterr().out
+    assert "1 member(s)" in out
+    assert "@wren" in out
