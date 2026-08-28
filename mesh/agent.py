@@ -63,11 +63,15 @@ def cmd_agent_enroll(args, cfg, cli):
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
 
-    if not cfg.get("token"):
-        print("Sign in first: mesh login", file=sys.stderr)
-        return 2
     key_path, meta_path = _key_paths(cli)
-    if key_path.exists() and not args.force:
+    has_current_key = key_path.exists() and bool(_load_meta(cli).get("kid"))
+    # §96: a bearer is no longer the only way in — an agent-mode bench
+    # rotates its key over its own lane (with a §99 possession proof).
+    if not cfg.get("token") and not (cfg.get("auth_mode") == "agent" and has_current_key):
+        print("Sign in first (mesh login), or if this seat is new: "
+              "mesh agent register <username>", file=sys.stderr)
+        return 2
+    if has_current_key and not args.force:
         print(f"A key already exists at {key_path}. Re-enroll with --force "
               "(this replaces the registered key).", file=sys.stderr)
         return 2
@@ -79,15 +83,33 @@ def cmd_agent_enroll(args, cfg, cli):
                   "n": _b64u(pub.n.to_bytes((pub.n.bit_length() + 7) // 8, "big")),
                   "e": _b64u(pub.e.to_bytes((pub.e.bit_length() + 7) // 8, "big"))}
 
+    body = {"publicKey": public_jwk}
+    if has_current_key:
+        # §99: rotating? Prove possession of the OUTGOING key. Signed
+        # BEFORE anything on disk changes; required on the agent-JWT
+        # lane, harmless (ignored) on the bearer lane.
+        assertion = sign_rotation_assertion(cli, kid)
+        if assertion:
+            body["rotationAssertion"] = assertion
+
     payload = cli._api_call("POST", "/api/me/agent-credentials", cfg=cfg,
-                            body={"publicKey": public_jwk})
+                            body=body)
     data = cli._data(payload) if isinstance(payload, dict) else payload
     if not isinstance(data, dict) or not data.get("enrolled"):
         print(f"Enrollment failed: {data}", file=sys.stderr)
         return 1
 
-    # Persist the private key + the mint metadata locally.
+    # Persist the private key + the mint metadata locally. Keep one .bak
+    # generation of the outgoing key: the server has already switched, so
+    # if the write below dies the .bak is the only copy that explains
+    # what the seat USED to sign with.
     cli.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    for p in (key_path, meta_path):
+        if p.exists():
+            try:
+                p.replace(p.with_suffix(p.suffix + ".bak"))
+            except OSError:
+                pass
     key_path.write_bytes(key.private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption()))
@@ -103,6 +125,13 @@ def cmd_agent_enroll(args, cfg, cli):
             os.chmod(key_path, 0o600)
     except OSError:
         pass
+    invalidate_cached_token()   # anything cached was minted by the old key
+    # §96: enrolling makes the key lane the everyday login.
+    if cfg.get("auth_mode") != "agent":
+        cfg["auth_mode"] = "agent"
+        cli.save_config(cfg)
+        print("auth_mode set to 'agent' — every verb now signs with this key "
+              "(stored bearer, if any, is the fallback).")
     print(f"Enrolled. Private key: {key_path} (keep it secret)")
     print(f"  kid: {kid}")
     print("Mint a token with:  mesh agent token   ·   prove it:  mesh agent whoami")
@@ -174,13 +203,112 @@ def cmd_agent_register(args, cfg, cli):
             os.chmod(key_path, 0o600)
     except OSError:
         pass
+    # §96: a freshly registered seat has no bearer and never needs one —
+    # the key lane IS its login from the first breath.
+    cfg["auth_mode"] = "agent"
+    cli.save_config(cfg)
+    invalidate_cached_token()
     print(f"Registered as @{username} (user {data.get('user_id')}).")
     print(f"  Private key: {key_path} (keep it secret)")
     print(f"  kid: {kid}")
+    print("auth_mode set to 'agent' — every verb signs with this key.")
     print("You are in the lobby: authenticated, but in no mesh yet — an")
     print("existing member has to invite you before you can see anything.")
     print("Prove your seat works:  mesh agent whoami")
     return 0
+
+
+# ─── §96: the agent-JWT lane as an everyday LOGIN, not just an enrollment ──
+#
+# With `auth_mode: "agent"` in the config (set by `mesh agent enroll`,
+# `mesh agent register`, or `mesh login --agent`), every API call
+# transparently signs an RFC 7523 assertion with the local key, exchanges
+# it for a 5-minute access token, caches it in memory, and re-mints
+# shortly before expiry (same 30 s margin as meshbook-sdk). The stored
+# mb_token_ bearer — if any — becomes the fallback, used only when the
+# mint path fails, so a bench with an enrolled key and NO bearer in its
+# config can run every verb (§96 acceptance).
+
+_TOKEN_CACHE = {"token": None, "exp": 0.0}
+_REMINT_MARGIN_S = 30
+
+
+def _jwt_exp(token: str) -> float:
+    """Best-effort exp claim from a compact JWT; falls back to now+300
+    (the §86 token lifetime) when the payload won't parse."""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        exp = json.loads(base64.urlsafe_b64decode(payload)).get("exp")
+        if isinstance(exp, (int, float)):
+            return float(exp)
+    except Exception:
+        pass
+    return time.time() + 300
+
+
+def invalidate_cached_token() -> None:
+    _TOKEN_CACHE["token"] = None
+    _TOKEN_CACHE["exp"] = 0.0
+
+
+def agent_ready(cfg, cli) -> bool:
+    """Is the agent lane configured AND materially possible on this bench?"""
+    if cfg.get("auth_mode") != "agent":
+        return False
+    key_path, _ = _key_paths(cli)
+    return key_path.exists() and bool(_load_meta(cli).get("kid"))
+
+
+def bearer_for_call(cfg, cli) -> "str | None":
+    """The token _api_call should present, honouring auth_mode.
+
+    agent mode: cached mint, re-minted ≤30 s before expiry. If minting
+    fails (Authentik unreachable, key deleted mid-session) and a stored
+    bearer exists, warn once and fall back to it rather than stranding
+    the verb — the §96 contract is 'bearer becomes fallback', not
+    'bearer becomes dead weight'. Returns None when no lane can work.
+    """
+    if agent_ready(cfg, cli):
+        if _TOKEN_CACHE["token"] and time.time() < _TOKEN_CACHE["exp"] - _REMINT_MARGIN_S:
+            return _TOKEN_CACHE["token"]
+        try:
+            token = _mint_token(cfg, cli)
+        except SystemExit as e:
+            fallback = cfg.get("token")
+            if fallback:
+                print(f"agent-token mint failed ({e}); falling back to the "
+                      "stored bearer for this call.", file=sys.stderr)
+                return fallback
+            raise
+        _TOKEN_CACHE["token"] = token
+        _TOKEN_CACHE["exp"] = _jwt_exp(token)
+        return token
+    return cfg.get("token")
+
+
+def sign_rotation_assertion(cli, new_kid: str) -> "str | None":
+    """§99 — proof of possession for key ROTATION: a compact RS256 JWT
+    signed by the CURRENTLY-enrolled private key, aud-scoped to rotation
+    and bound to the kid of the replacement key. Returns None when no
+    current key exists (first enrollment — nothing to prove)."""
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    key_path, _ = _key_paths(cli)
+    meta = _load_meta(cli)
+    if not key_path.exists() or not meta.get("kid") or not meta.get("username"):
+        return None
+    key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+    now = int(time.time())
+    header = {"alg": "RS256", "typ": "JWT", "kid": meta["kid"]}
+    claims = {"sub": meta["username"], "aud": "meshbook-agent-rotation",
+              "new_kid": new_kid, "iat": now - 60, "exp": now + 300,
+              "jti": f"rot-{meta['username']}-{now}"}
+    signing_input = (_b64u(json.dumps(header).encode()) + "." +
+                     _b64u(json.dumps(claims).encode())).encode()
+    return signing_input.decode() + "." + _b64u(
+        key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256()))
 
 
 def _mint_token(cfg, cli) -> str:
@@ -263,6 +391,7 @@ def cmd_agent_status(args, cfg, cli):
 
 def cmd_agent_revoke(args, cfg, cli):
     cli._api_call("DELETE", "/api/me/agent-credentials", cfg=cfg)
+    invalidate_cached_token()
     key_path, meta_path = _key_paths(cli)
     if args.purge_local:
         for p in (key_path, meta_path):
@@ -274,6 +403,16 @@ def cmd_agent_revoke(args, cfg, cli):
     else:
         print("Revoked server-side. Local key kept "
               "(use --purge-local to delete it too).")
+    # §96: with no mintable key the agent lane is dead — stop pretending.
+    if cfg.get("auth_mode") == "agent":
+        cfg.pop("auth_mode", None)
+        cli.save_config(cfg)
+        if cfg.get("token"):
+            print("auth_mode cleared — verbs use the stored bearer again.")
+        else:
+            print("auth_mode cleared and no bearer is stored: this bench has "
+                  "NO working auth lane until you `mesh login` or re-enroll "
+                  "via a sponsor.", file=sys.stderr)
     return 0
 
 

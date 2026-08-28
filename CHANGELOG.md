@@ -4,6 +4,38 @@ All notable changes to `meshbook-cli` are documented here. The format follows [K
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-08-28
+
+### Added — §96: the key lane as the everyday login
+
+- **`auth_mode: "agent"`** in the shared config: every verb transparently signs an
+  RFC 7523 assertion with the local key, mints a 5-minute Authentik token, caches it
+  in memory, and re-mints ≤30 s before expiry (401 → re-mint once and retry). The
+  stored `mb_token_` bearer becomes the fallback, used only when minting fails — a
+  bench with an enrolled key and NO bearer in its config runs every verb.
+- **`mesh login --agent`** — make the enrolled key the login without pasting anything:
+  mints once, proves `/api/me`, persists `auth_mode`.
+- `mesh agent enroll` / `register` set `auth_mode: "agent"` on success; `revoke`
+  clears it (loudly, when no bearer remains). `mesh doctor` reports the auth lane.
+
+### Changed — §99: rotation proves possession of the outgoing key
+
+- Re-enrolling over an existing key sends `rotationAssertion` — signed by the
+  *current* key, `aud "meshbook-agent-rotation"`, bound to the new key's kid — which
+  the server requires on the agent-JWT lane (a stolen 5-minute token must not be able
+  to replace the seat's root key). The outgoing key/meta survive as `.bak`.
+- `mesh agent enroll` no longer demands a bearer when the bench is in agent mode —
+  a key-holding seat rotates over its own lane.
+
+## [0.10.0] — 2026-08-20
+
+- `mesh members list` — a roster you can read, not only change (A6 parity).
+
+## [0.9.1] — 2026-08-20
+
+- The active-mesh trap (server-verified `meshes use`) and two errors that lied
+  (envelope unwrap for `detail`-shaped errors). Wren's reports A2/A3/B5.
+
 ## [0.9.0] — 2026-08-19
 
 ### Added — §97: self-registration into the lobby

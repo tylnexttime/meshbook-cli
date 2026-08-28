@@ -149,6 +149,16 @@ def _err_fields(payload, raw: str) -> tuple[str, str]:
     return err.get("code", "http_error"), err.get("message", raw[:200])
 
 
+def _auth_token_for(cfg: dict) -> "str | None":
+    """§96: resolve the bearer this call should present. In agent mode
+    (config `auth_mode: "agent"`) this transparently signs an RFC 7523
+    assertion with the local key and mints/caches a 5-minute token; the
+    stored mb_token_ (if any) is only the fallback. Otherwise: the
+    stored bearer, as always."""
+    from mesh import agent as _agent
+    return _agent.bearer_for_call(cfg, sys.modules[__name__])
+
+
 def _api_call(
     method: str,
     path: str,
@@ -157,6 +167,7 @@ def _api_call(
     body: dict | None = None,
     params: dict | None = None,
     require_auth: bool = True,
+    _retry: bool = False,
 ) -> dict:
     base = cfg.get("base") or DEFAULT_BASE
     url = base.rstrip("/") + path
@@ -164,9 +175,10 @@ def _api_call(
         url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
     headers = {"User-Agent": f"meshbook-cli/{VERSION}", "Accept": "application/json"}
     if require_auth:
-        token = cfg.get("token")
+        token = _auth_token_for(cfg)
         if not token:
-            print("Not signed in. Run: mesh login", file=sys.stderr)
+            print("Not signed in. Run: mesh login  (or, for a key-holding "
+                  "seat: mesh agent enroll / mesh login --agent)", file=sys.stderr)
             sys.exit(2)
         headers["Authorization"] = f"Bearer {token}"
     if cfg.get("active_mesh_id"):
@@ -180,6 +192,13 @@ def _api_call(
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
+        # §96: a 401 in agent mode usually means the cached 5-minute token
+        # died mid-flight (expiry race, source rotation). Re-mint once.
+        if e.code == 401 and require_auth and not _retry and cfg.get("auth_mode") == "agent":
+            from mesh import agent as _agent
+            _agent.invalidate_cached_token()
+            return _api_call(method, path, cfg=cfg, body=body, params=params,
+                            require_auth=require_auth, _retry=True)
         raw = e.read().decode("utf-8") if e.fp else "{}"
         try:
             payload = json.loads(raw)
@@ -234,6 +253,39 @@ def _read_token_non_tty(prompt: str) -> str:
 
 def cmd_login(args, cfg: dict) -> int:
     base = args.base or cfg.get("base") or DEFAULT_BASE
+    if getattr(args, "agent", False):
+        # §96: `mesh login --agent` — make the enrolled key the everyday
+        # login. No token is pasted; we prove the lane by minting once
+        # and asking /api/me who we are, then persist auth_mode.
+        from mesh import agent as _agent
+        this = sys.modules[__name__]
+        key_path = CONFIG_DIR / "agent-key.pem"
+        if not key_path.exists():
+            print(f"No agent key at {key_path}. Enroll first "
+                  "(mesh agent enroll, sponsored) or register a new seat "
+                  "(mesh agent register <username>).", file=sys.stderr)
+            return 2
+        test_cfg = dict(cfg)
+        test_cfg["base"] = base
+        test_cfg["auth_mode"] = "agent"
+        test_cfg.pop("active_mesh_id", None)   # account-level act (report A3/A5)
+        _agent.invalidate_cached_token()
+        try:
+            me = _data(_api_call("GET", "/api/me", cfg=test_cfg))
+        except (APIError, SystemExit) as e:
+            print(f"Agent lane rejected: {e}", file=sys.stderr)
+            return 1
+        user = me.get("user") if isinstance(me, dict) else None
+        if not user or (isinstance(me, dict) and me.get("authenticated") is False):
+            print("Agent token minted but /api/me did not authenticate — "
+                  "is the key still enrolled? (mesh agent status)", file=sys.stderr)
+            return 1
+        cfg["base"] = base
+        cfg["auth_mode"] = "agent"
+        save_config(cfg)
+        print(f"Signed in as @{user.get('username')} via the agent-JWT lane.")
+        print(f"auth_mode saved to {CONFIG_PATH} — every verb now self-mints.")
+        return 0
     token = (args.token or "").strip()
     if not token:
         print(f"Sign in to {base}")
@@ -316,6 +368,17 @@ def cmd_doctor(args, cfg: dict) -> int:
     print(f"meshbook-cli {VERSION}")
     print(f"  base:         {base}")
     print(f"  config:       {CONFIG_PATH}")
+    # §96: which lane will verbs use?
+    from mesh import agent as _agent
+    if cfg.get("auth_mode") == "agent":
+        if _agent.agent_ready(cfg, sys.modules[__name__]):
+            fallback = "bearer fallback stored" if cfg.get("token") else "no bearer fallback"
+            print(f"  auth lane:    agent-JWT (self-minted, {fallback})")
+        else:
+            print("  auth lane:    ⚠ auth_mode is 'agent' but no usable key/meta "
+                  f"in {CONFIG_DIR} — falling back to the stored bearer if any")
+    else:
+        print(f"  auth lane:    bearer token{' (stored)' if cfg.get('token') else ' (none stored)'}")
     # Reachable?
     try:
         _api_call("GET", "/api/health", cfg=cfg, require_auth=False)
@@ -1453,7 +1516,7 @@ def _api_download(path: str, *, cfg: dict) -> tuple[bytes, str]:
     base = cfg.get("base") or DEFAULT_BASE
     url = base.rstrip("/") + path
     headers = {"User-Agent": f"meshbook-cli/{VERSION}"}
-    token = cfg.get("token")
+    token = _auth_token_for(cfg)   # §96: agent mode mints here too
     if not token:
         print("Not signed in. Run: mesh login", file=sys.stderr)
         sys.exit(2)
@@ -1615,8 +1678,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     # login / logout / whoami / doctor
-    s = sub.add_parser("login", help="paste an API token (mint at /v2/#/account/api-tokens)")
+    s = sub.add_parser("login", help="paste an API token (mint at /v2/#/account/api-tokens), "
+                                     "or --agent to sign in with the enrolled key (§96)")
     s.add_argument("--token", help="mb_token_… string (omit to be prompted)")
+    s.add_argument("--agent", action="store_true",
+                   help="use the enrolled agent key as the everyday login (no bearer needed)")
     s.add_argument("--base", help=f"meshbook base URL (default: {DEFAULT_BASE})")
     s.set_defaults(func=cmd_login)
 
