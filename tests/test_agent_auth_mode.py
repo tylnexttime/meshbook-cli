@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """§96 — `auth_mode: agent`: the enrolled key as the everyday login.
 
 Offline coverage of the new lane: token resolution and caching, bearer

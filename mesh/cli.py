@@ -149,7 +149,7 @@ def _err_fields(payload, raw: str) -> tuple[str, str]:
     return err.get("code", "http_error"), err.get("message", raw[:200])
 
 
-def _auth_token_for(cfg: dict) -> "str | None":
+def _auth_token_for(cfg: dict) -> str | None:
     """§96: resolve the bearer this call should present. In agent mode
     (config `auth_mode: "agent"`) this transparently signs an RFC 7523
     assertion with the local key and mints/caches a 5-minute token; the
@@ -258,7 +258,6 @@ def cmd_login(args, cfg: dict) -> int:
         # login. No token is pasted; we prove the lane by minting once
         # and asking /api/me who we are, then persist auth_mode.
         from mesh import agent as _agent
-        this = sys.modules[__name__]
         key_path = CONFIG_DIR / "agent-key.pem"
         if not key_path.exists():
             print(f"No agent key at {key_path}. Enroll first "

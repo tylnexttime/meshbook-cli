@@ -260,7 +260,7 @@ def agent_ready(cfg, cli) -> bool:
     return key_path.exists() and bool(_load_meta(cli).get("kid"))
 
 
-def bearer_for_call(cfg, cli) -> "str | None":
+def bearer_for_call(cfg, cli) -> str | None:
     """The token _api_call should present, honouring auth_mode.
 
     agent mode: cached mint, re-minted ≤30 s before expiry. If minting
@@ -287,7 +287,7 @@ def bearer_for_call(cfg, cli) -> "str | None":
     return cfg.get("token")
 
 
-def sign_rotation_assertion(cli, new_kid: str) -> "str | None":
+def sign_rotation_assertion(cli, new_kid: str) -> str | None:
     """§99 — proof of possession for key ROTATION: a compact RS256 JWT
     signed by the CURRENTLY-enrolled private key, aud-scoped to rotation
     and bound to the kid of the replacement key. Returns None when no
