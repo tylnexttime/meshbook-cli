@@ -321,3 +321,87 @@ def test_offset_listings_keep_their_offset_footer(api, run):
     api.add("GET", "/api/contacts", ok_list([{"id": "c1", "firstName": "A"}] * 2,
                                             total=10, limit=2, offset=4))
     assert "more: --offset 6" in run("contacts", "list", "--limit", "2", "--offset", "4").out
+
+
+# ─── downloads: --overwrite, and the SDK's refusals explained ───────────
+
+import os  # noqa: E402
+
+DL = {"chat": "/api/chat-attachments/{}/download", "file": "/api/entity-attachments/{}/download"}
+
+
+@pytest.mark.parametrize("verb", ["chat", "file"])
+def test_download_refuses_to_replace_a_file_by_default(api, run, tmp_path, verb):
+    """0.12.0 (SDK 0.4.0) replaced an existing file silently."""
+    target = tmp_path / "keep.txt"
+    target.write_bytes(b"precious")
+    api.add("GET", DL[verb].format("a1"), Resp(b"new"))
+    r = run(verb, "download", "a1", "--out", str(target))
+    assert r.rc == 2, r.err
+    assert target.read_bytes() == b"precious"
+    assert "--overwrite" in r.err
+    assert "overwrite=True" not in r.err
+    assert not api.requests                  # an explicit path is checked before the request
+    e = run("--json", verb, "download", "a1", "--out", str(target)).err_json()["error"]
+    assert (e["code"], e["hintCode"]) == ("file_exists", "allow_overwrite")
+
+
+@pytest.mark.parametrize("verb", ["chat", "file"])
+def test_download_overwrite_replaces(api, run, tmp_path, verb):
+    target = tmp_path / "keep.txt"
+    target.write_bytes(b"old")
+    api.add("GET", DL[verb].format("a1"), Resp(b"new"))
+    r = run(verb, "download", "a1", "--out", str(target), "--overwrite")
+    assert r.rc == 0, r.err
+    assert target.read_bytes() == b"new"
+
+
+@pytest.mark.parametrize("verb", ["chat", "file"])
+def test_download_into_a_directory_refuses_an_existing_server_name(api, run, tmp_path, verb):
+    (tmp_path / "served.bin").write_bytes(b"mine")
+    api.add("GET", DL[verb].format("a1"),
+            Resp(b"theirs", {"Content-Disposition": 'attachment; filename="served.bin"'}))
+    r = run(verb, "download", "a1", "--out", str(tmp_path))
+    assert r.rc == 2
+    assert (tmp_path / "served.bin").read_bytes() == b"mine"
+    assert run(verb, "download", "a1", "--out", str(tmp_path), "--overwrite").rc == 0
+    assert (tmp_path / "served.bin").read_bytes() == b"theirs"
+
+
+@pytest.mark.parametrize("hostile", ["../../evil.txt", "..\\..\\evil.txt", "C:\\evil.txt",
+                                     "/etc/passwd", "CON"])
+def test_a_hostile_server_name_lands_inside_out(api, run, tmp_path, hostile):
+    """The security fix behind the 0.4.1 floor (C-03), through the CLI."""
+    out = tmp_path / "dl"
+    out.mkdir()
+    api.add("GET", DL["file"].format("a1"),
+            Resp(b"x", {"Content-Disposition": f'attachment; filename="{hostile}"'}))
+    r = run("--json", "file", "download", "a1", "--out", str(out))
+    assert r.rc == 0, r.err
+    saved = r.json()["path"]
+    assert os.path.dirname(os.path.abspath(saved)) == os.path.abspath(out)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["dl"]
+
+
+def test_unsafe_path_is_explained(api, run, tmp_path):
+    """A name that resolves outside --out (a planted symlink) is refused."""
+    out = tmp_path / "dl"
+    out.mkdir()
+    outside = tmp_path / "outside.txt"
+    try:
+        os.symlink(outside, out / "served.bin")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not permitted here")
+    api.add("GET", DL["file"].format("a1"),
+            Resp(b"x", {"Content-Disposition": 'attachment; filename="served.bin"'}))
+    r = run("--json", "file", "download", "a1", "--out", str(out), "--overwrite")
+    assert r.rc == 2, r.err
+    e = r.err_json()["error"]
+    assert (e["code"], e["hintCode"]) == ("unsafe_path", "choose_out_path")
+    assert "--out" in e["hint"]
+    assert not outside.exists()
+
+
+def test_every_download_verb_has_overwrite(run):
+    for verb in ("chat", "file"):
+        assert "--overwrite" in run(verb, "download", "--help").out

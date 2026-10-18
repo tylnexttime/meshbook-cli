@@ -121,7 +121,8 @@ def _saved(ctx: Ctx, path: Any) -> int:
 
 
 def cmd_chat_download(ctx: Ctx) -> int:
-    return _saved(ctx, ctx.client.chat.download(ctx.args.attachment_id, ctx.args.out))
+    a = ctx.args
+    return _saved(ctx, ctx.client.chat.download(a.attachment_id, a.out, overwrite=a.overwrite))
 
 
 def cmd_chat_react(ctx: Ctx) -> int:
@@ -305,7 +306,8 @@ def cmd_file_list(ctx: Ctx) -> int:
 
 
 def cmd_file_download(ctx: Ctx) -> int:
-    return _saved(ctx, ctx.client.files.download(ctx.args.attachment_id, ctx.args.out))
+    a = ctx.args
+    return _saved(ctx, ctx.client.files.download(a.attachment_id, a.out, overwrite=a.overwrite))
 
 
 def cmd_file_delete(ctx: Ctx) -> int:
@@ -315,6 +317,19 @@ def cmd_file_delete(ctx: Ctx) -> int:
 
 
 # ─── wiring ─────────────────────────────────────────────────────────────
+
+
+def _download_args(s: Any) -> None:
+    """--out and --overwrite, the same on every download verb.
+
+    Since meshbook-sdk 0.4.1 a download never replaces an existing file unless
+    asked (``file_exists``), and the server's file name is reduced to one safe
+    component that must land inside the --out directory (``unsafe_path``).
+    """
+    s.add_argument("--out", help="output path or directory (default: the server's file name, "
+                                 "made safe, in the current directory)")
+    s.add_argument("--overwrite", action="store_true",
+                   help="replace the file if it already exists (default: refuse)")
 
 
 def _paging(s: Any, default: int | None) -> None:
@@ -358,7 +373,7 @@ def register(sub: Any, add: Any) -> None:
     s.set_defaults(func=cmd_chat_attach)
     s = add(chs, "download", help="download a chat attachment by id (§78)")
     s.add_argument("attachment_id", help="UUID of the chat attachment")
-    s.add_argument("--out", help="output path or directory (default: server filename in cwd)")
+    _download_args(s)
     s.set_defaults(func=cmd_chat_download)
     s = add(chs, "react", help="react to any chat message (feed, entity, channel or DM)")
     s.add_argument("message_id", help="UUID of the message")
@@ -392,7 +407,7 @@ def register(sub: Any, add: Any) -> None:
     s.set_defaults(func=cmd_file_list)
     s = add(fls, "download", help="download an entity attachment by id")
     s.add_argument("attachment_id", help="UUID of the attachment")
-    s.add_argument("--out", help="output path or directory (default: server filename in cwd)")
+    _download_args(s)
     s.set_defaults(func=cmd_file_download)
     s = add(fls, "delete", help="delete an entity attachment (uploader or mesh admin)")
     s.add_argument("attachment_id")
