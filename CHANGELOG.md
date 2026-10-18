@@ -4,6 +4,89 @@ All notable changes to `meshbook-cli` are documented here. The format follows [K
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-10-19
+
+A fast follow to 0.12.0: the CLI moves onto meshbook-sdk 0.4.1 (a security
+release) and absorbs its behaviour changes, plus the Windows time-zone fix.
+
+### Security
+
+- **Depends on `meshbook-sdk>=0.4.1,<0.5`** (runtime, `[agent]` and `[dev]`), so
+  0.12.1 never runs on 0.4.0, whose downloads joined the server's file name onto
+  the output directory unchecked (`../../.bashrc` was an arbitrary file write) and
+  replaced existing files silently (SDK critique C-03). A test fails if any of the
+  three requirements loses the floor.
+
+### Added
+
+- **`--overwrite`** on `chat download` and `file download`. Without it an existing
+  file is refused (`file_exists`, exit 2, advice names `--overwrite` and `--out`);
+  a server file name that would land outside `--out` is refused (`unsafe_path`).
+- **`--before TIME`** on `chat list`, `channels read` and `dm read`: the routes
+  page by time. The footer of a full page prints the exact next value
+  (`more: --before 2026-10-19T08:00:00+00:00`) and JSON adds `nextBefore`. A time
+  without an offset is this machine's zone, as for events.
+- **`mesh login --repair-config`**: when the config file cannot be parsed, move it
+  aside as `config.bad.<UTC time>` (never overwriting an earlier copy) and save the
+  new login. It runs only after the new token is verified.
+- **`hintCode`** in every JSON error: meshbook-sdk's stable machine hint
+  (`allow_overwrite`, `use_before_cursor`, `check_before_retry`, `fix_config`,
+  `reauthenticate` ...), for scripts that branch. `hint` stays the advice for people.
+- `saved-views list --module` (`--entity`, the 0.12.0 spelling, still works).
+
+### Changed
+
+- **`--offset` is refused on `chat list`, `chat search`, `channels read` and
+  `dm read`** (bad_argument, exit 2, before anything is sent) and gone from their
+  help. The server ignores it, so 0.12.0's "next page" was the first page again.
+  `chat search` takes `--limit` only; its footer says `raise --limit`.
+- **Errors branch on the SDK's hint, not its wording.** Advice comes from the
+  hint where the SDK sets a specific one (a write whose answer was lost says
+  "check before running it again", not "check connectivity"), else from the code.
+  SDK sentences that name Python calls (`quarantine_config()`, `recover_pending()`,
+  `overwrite=True`, `before=`) are replaced by the CLI's flags. A bare 401 still
+  gets the sign-in-again advice.
+- **A config file that cannot be parsed is reported as such** (exit 2, with its
+  path and the repair flag), not read as "signed out": the SDK no longer writes
+  over it, because it may be a half-written file that still holds the token
+  (C-40). `mesh doctor` names it.
+- **Saved-view modules are the server's**: `contacts`, `companies`, `leads`,
+  `projects`, `tasks`, `calendar`, `activity-log`. The SDK now really filters by
+  module (0.4.0 sent `entityType`, which the route ignores, so every spelling
+  returned every view), so the CLI maps singular and other common forms (`lead`,
+  `Leads`, `event`, `activity_log`) and refuses anything else before sending (an
+  unknown module was a 500 on create and an always-empty list).
+- **Recurring events keep local wall-clock time on Windows without `--tz`.** 0.12.0
+  could not name the local zone there (no `/etc/localtime`), so the server
+  expanded recurrences on UTC and a weekly 10:00 Sydney meeting drifted an hour
+  across DST. The Windows zone (registry `TimeZoneKeyName`) is now mapped to IANA
+  through a CLDR windowsZones table; an unmapped zone keeps the old UTC note.
+- `mesh meshes use` says, on stderr, when `MESHBOOK_MESH` names another mesh and
+  will beat the saved one (JSON: `envOverride`), instead of a raw Python
+  `UserWarning`.
+- The test-suite's request guard and the CI registry check use the SDK's public
+  `meshbook.endpoints` (0.12.0 imported the private `meshbook._endpoints`).
+
+### Fixed
+
+- `--mesh ""` was dropped and the call quietly used `MESHBOOK_MESH` or the config's
+  mesh; it now reaches the SDK, which refuses it (bad_argument, exit 2). An empty
+  `MESHBOOK_MESH` is refused the same way.
+- Listing footers offered `--offset` on routes that ignore it.
+- `saved-views list` rows read `entityType`; the route returns `module`.
+- The channel-by-UUID 403 test routed a lookup GET the SDK no longer sends; it now
+  checks the 403 from the messages call is still reported as a 403, not "no match".
+
+### Upgrading from 0.12.0
+
+- Scripts that pass `--offset` to the four chat verbs now exit 2: page with
+  `--before` (from the previous page's footer or `nextBefore`).
+- Downloads into a place where the file already exists now exit 2: add
+  `--overwrite` if replacing is what you want.
+- `saved-views list --entity X` with a value that is not a module now exits 2.
+- A plain `http://` base is refused unless it is localhost (SDK `insecure_base`).
+- `MESHBOOK_MESH=` (set but empty) is refused; unset it instead.
+
 ## [0.12.0] — 2026-10-19
 
 The "next level" release: the CLI becomes a thin shell over meshbook-sdk, gains a

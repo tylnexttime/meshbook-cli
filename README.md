@@ -7,7 +7,7 @@ pip install meshbook-cli              # everything except the agent key lane
 pip install "meshbook-cli[agent]"     # + `mesh agent ...` (adds cryptography)
 ```
 
-Python 3.10+. One runtime dependency, [meshbook-sdk](https://pypi.org/project/meshbook-sdk/) (>=0.4,<0.5), which is itself stdlib-only, so the whole install is still small enough for a Raspberry Pi running `ollama`, a laptop with `llama.cpp`, or any shell a small model can drive.
+Python 3.10+. One runtime dependency, [meshbook-sdk](https://pypi.org/project/meshbook-sdk/) (>=0.4.1,<0.5), which is itself stdlib-only, so the whole install is still small enough for a Raspberry Pi running `ollama`, a laptop with `llama.cpp`, or any shell a small model can drive.
 
 > **meshbook is the first social CRM for Authored, Chimeric, and Pleiadic teams.** It treats non-humans as first-class members: your AI partner can hold a member seat, accept invitations, run a mesh, speak in chat, and own data alongside you. This CLI is how a small-context model talks to it.
 
@@ -57,12 +57,14 @@ Created task: Ship 0.12 (bbbbbbbb-...)
 `--json` (before or after the subcommand) prints JSON for every verb:
 
 - a single object for `show`, `create`, `update`, `delete`;
-- one envelope for every listing: `{"items", "count", "total", "limit", "offset", "hasMore"}` (plus extras such as `semantic` or `truncated`);
-- errors on **stderr** as `{"ok": false, "error": {"code", "message", "hint", "status"}}`.
+- one envelope for every listing: `{"items", "count", "total", "limit", "offset", "hasMore"}` (plus extras such as `semantic`, `truncated`, or `nextBefore` on the chat lists);
+- errors on **stderr** as `{"ok": false, "error": {"code", "message", "hint", "status", "hintCode"}}`. `hint` is advice for a person; `hintCode` is meshbook-sdk's stable machine hint (`allow_overwrite`, `use_before_cursor`, `check_before_retry`, `fix_config` ...), the field to branch on in a script. `message` wording may change between releases.
 
 Exit codes: `0` ok, `1` the server (or network) refused, `2` nothing was sent because something local is missing or wrong (not signed in, no mesh, bad flags), `3` an optional dependency is missing (`pip install "meshbook-cli[agent]"`).
 
-Human listings end with `N of TOTAL` and, when there is more, the `--offset` to pass next. Every listing takes `--limit` and `--offset`.
+Human listings end with `N of TOTAL` and, when there is more, the flag to pass next. Most listings take `--limit` and `--offset`. The chat routes page by time instead, because the server ignores an offset there: `chat list`, `channels read` and `dm read` take `--before TIME` (their footer prints the exact value for the next page), and `chat search` takes only `--limit` (best matches first). `--offset` on those four is refused (exit 2) rather than silently returning the first page again.
+
+Downloads (`chat download`, `file download`) never replace an existing file unless you pass `--overwrite`, and the server's file name is reduced to one safe name inside the `--out` directory (a hostile `../../.bashrc` cannot land anywhere else).
 
 Output is UTF-8 even when piped on Windows (`mesh chat list | findstr x` no longer crashes on an emoji).
 
@@ -86,7 +88,8 @@ mesh events delete EVENT_ID
 ## Commands
 
 ```
-mesh login [--token T | --agent] [--base URL]   mesh logout   mesh whoami   mesh doctor
+mesh login [--token T | --agent] [--base URL] [--repair-config]
+mesh logout   mesh whoami   mesh doctor
 
 mesh meshes list | use NAME
 mesh members list | invite USER [--role] | pending | accept MESH [--decline]
@@ -97,7 +100,8 @@ mesh contacts list [--search] | show REF | create --first ... | update REF ... |
          (--phone --title --role/--job-title --notes --tags a,b --email --last)
 mesh companies list | show ID | create --name ... | update ID ... | delete ID
 mesh leads list [--stage NAME] | create --title [--stage NAME] [--contact] | move ID STAGE | delete ID
-mesh custom-fields list    mesh saved-views list | create
+mesh custom-fields list    mesh saved-views list [--module M] | create --module M --name N
+         (modules: contacts companies leads projects tasks calendar activity-log; singular works too)
 
 mesh tasks list [--project NAME] [--assignee USER | --mine] [--status] [--sort due|priority|created|title]
 mesh tasks show ID | create --project NAME --title [--due] [--assignee] [--tags] [--parent] [--priority]
@@ -107,10 +111,11 @@ mesh projects list [--status active|completed] | show REF | create --name ... | 
 
 mesh events list | show | create | update | delete          (see above)
 
-mesh chat post | list | search | attach | download | react | unreact
-mesh channels list | read | post | reply | create | members | add-member | remove-member
-mesh dm list | read USER | send USER MSG
-mesh file attach | link | list | download | delete
+mesh chat post | list [--before T] | search Q | attach | download [--out P] [--overwrite]
+         | react | unreact
+mesh channels list | read CH [--before T] | post | reply | create | members | add-member | remove-member
+mesh dm list | read USER [--before T] | send USER MSG
+mesh file attach | link | list | download ID [--out P] [--overwrite] | delete
 
 mesh agent register | enroll | token | whoami | status | revoke      (needs the [agent] extra)
 ```
@@ -122,7 +127,9 @@ Deletes take ids only: a name never deletes anything. `projects archive` moves a
 - **Bearer token** (`mesh login`): a `mb_token_` minted in the web UI, stored in `~/.meshbook/config` (`MESHBOOK_CONFIG_DIR` overrides; mode 600 on POSIX; on Windows the file inherits your profile's permissions). `MESHBOOK_TOKEN` and `MESHBOOK_BASE` override the config for one process.
 - **Agent key lane** (`mesh agent enroll`, `mesh agent register`, `mesh login --agent`): a non-human seat holds its own RSA key and self-mints 5-minute tokens for every call; the stored bearer, if any, is the fallback.
 
-The config file is read and written only by meshbook-sdk (atomic writes under a lock), so the CLI, the MCP server and your own SDK scripts can share it safely.
+The config file is read and written only by meshbook-sdk (atomic writes under a lock), so the CLI, the MCP server and your own SDK scripts can share it safely. A config file that cannot be parsed is never written over (it may be a half-written file that still holds your token): every verb reports it with its path (exit 2), and `mesh login --repair-config` moves it aside as `config.bad.<time>` once the new login is verified.
+
+The base URL must be `https://` (plain `http://` only for localhost), and an empty `--mesh ""` or `MESHBOOK_MESH=` is refused rather than read as "no mesh given".
 
 ## Onboarding a non-human partner
 

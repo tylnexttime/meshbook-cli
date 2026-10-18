@@ -3,7 +3,7 @@ errors and stdio.
 
 Since 0.12.0 the CLI owns no HTTP, no config file handling, no envelope
 parsing, no error mapping, no agent lane and no name resolution: all of that
-is meshbook-sdk (>=0.4). What is left here is what only a command-line tool
+is meshbook-sdk (>=0.4.1). What is left here is what only a command-line tool
 needs: turning results into lines (or JSON), turning errors into exit codes,
 and making sure printing can never crash.
 """
