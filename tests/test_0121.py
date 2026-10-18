@@ -405,3 +405,74 @@ def test_unsafe_path_is_explained(api, run, tmp_path):
 def test_every_download_verb_has_overwrite(run):
     for verb in ("chat", "file"):
         assert "--overwrite" in run(verb, "download", "--help").out
+
+
+# ─── saved views: the server's module names, singular or plural ─────────
+
+
+@pytest.mark.parametrize("typed, sent", [
+    ("lead", "leads"), ("leads", "leads"), ("Leads", "leads"),
+    ("contact", "contacts"), ("company", "companies"), ("companies", "companies"),
+    ("project", "projects"), ("task", "tasks"), ("tasks", "tasks"),
+    ("event", "calendar"), ("calendar", "calendar"),
+    ("activity_log", "activity-log"), ("activity-log", "activity-log"), ("activity", "activity-log"),
+])
+def test_saved_views_list_maps_to_the_server_module(api, run, typed, sent):
+    """SDK 0.4.1 filters by module for real (0.4.0's entityType was ignored),
+    so "lead" and "leads" must send the same thing."""
+    api.add("GET", "/api/saved-views", ok_list([]))
+    r = run("saved-views", "list", "--module", typed)
+    assert r.rc == 0, r.err
+    q = api.query(api.one("GET", "/api/saved-views"))
+    assert q["module"] == sent and "entityType" not in q
+
+
+def test_saved_views_list_keeps_the_entity_spelling(api, run):
+    api.add("GET", "/api/saved-views", ok_list([]))
+    assert run("saved-views", "list", "--entity", "lead").rc == 0
+    assert api.query(api.one("GET", "/api/saved-views"))["module"] == "leads"
+
+
+def test_saved_views_list_without_module_sends_no_filter(api, run):
+    api.add("GET", "/api/saved-views", ok_list([{"module": "leads", "name": "Hot", "id": "sv"}]))
+    r = run("saved-views", "list")
+    assert "module" not in api.query(api.one("GET", "/api/saved-views"))
+    assert "leads: Hot" in r.out      # the route's own field
+
+
+@pytest.mark.parametrize("typed, sent", [("lead", "leads"), ("contacts", "contacts"),
+                                         ("events", "calendar")])
+def test_saved_views_create_maps_the_module(api, run, typed, sent):
+    api.add("POST", "/api/saved-views", ok({"id": "sv-1"}))
+    r = run("saved-views", "create", "--module", typed, "--name", "Hot")
+    assert r.rc == 0, r.err
+    assert api.body(api.one("POST", "/api/saved-views"))["module"] == sent
+    assert f"for {sent}" in r.out
+
+
+@pytest.mark.parametrize("verb", [("list", "--module", "deals"),
+                                  ("create", "--module", "deals", "--name", "X")])
+def test_an_unknown_module_is_refused_before_sending(api, run, verb):
+    """The column has a CHECK constraint: an unknown module was a 500 on
+    create and an always-empty list."""
+    r = run("--json", "saved-views", *verb)
+    assert r.rc == 2
+    e = r.err_json()["error"]
+    assert e["code"] == "bad_argument" and "leads" in e["message"]
+    assert not api.requests
+
+
+def test_cli_modules_match_the_server_constraint():
+    """Pinned to the server's ck_saved_views_module (migrations 0001); read
+    from the sibling checkout when it is there, so a server change shows up."""
+    from mesh.cmd_crm import SAVED_VIEW_MODULES
+
+    assert set(SAVED_VIEW_MODULES) == {"contacts", "companies", "leads", "projects", "tasks",
+                                       "calendar", "activity-log"}
+    mig = ROOT.parent / "meshbook" / "migrations" / "versions" / "0001_meshbook_initial.py"
+    if not mig.exists():
+        pytest.skip("meshbook server checkout not beside this repo")
+    m = re.search(r"module IN \(([^)]*)\)", mig.read_text(encoding="utf-8"))
+    assert m is not None
+    server = {x.strip().strip("'") for x in m.group(1).split(",")}
+    assert server == set(SAVED_VIEW_MODULES)

@@ -205,11 +205,55 @@ def cmd_custom_fields_list(ctx: Ctx) -> int:
     return ctx.listing(rows, row, empty="  (no custom fields)")
 
 
+#: The server's saved-view modules: the CHECK constraint ck_saved_views_module
+#: (meshbook migrations 0001) and the web app's list pages. Free text on the
+#: wire, so anything else is a 500 on create and an empty list on list.
+SAVED_VIEW_MODULES = ("contacts", "companies", "leads", "projects", "tasks", "calendar",
+                      "activity-log")
+
+#: What people type for them. "lead" and "leads" must mean the same thing now
+#: that the filter is real (SDK 0.4.1 sends module=; 0.4.0 sent entityType=,
+#: which the route ignored, so any spelling "worked" and returned every view).
+_MODULE_ALIASES = {
+    "contact": "contacts",
+    "company": "companies",
+    "lead": "leads",
+    "project": "projects",
+    "task": "tasks",
+    "event": "calendar",
+    "events": "calendar",
+    "calendar-event": "calendar",
+    "calendar-events": "calendar",
+    "activity": "activity-log",
+    "activities": "activity-log",
+    "activity-logs": "activity-log",
+    "activitylog": "activity-log",
+}
+
+
+def saved_view_module(value: str | None) -> str | None:
+    """A module as typed (``lead``, ``Leads``, ``activity_log``) → the server's name."""
+    if value is None:
+        return None
+    key = value.strip().lower().replace("_", "-").replace(" ", "-")
+    if key in SAVED_VIEW_MODULES:
+        return key
+    if key in _MODULE_ALIASES:
+        return _MODULE_ALIASES[key]
+    raise CliError(
+        "bad_argument",
+        f"Unknown saved-view module {value!r}. The server's modules: {', '.join(SAVED_VIEW_MODULES)}.",
+        hint="Singular forms work too (lead, contact, task, event ...).",
+        hint_code="fix_argument",
+    )
+
+
 def cmd_saved_views_list(ctx: Ctx) -> int:
     a = ctx.args
-    rows = ctx.client.saved_views.list(a.entity, limit=a.limit, offset=a.offset)
+    rows = ctx.client.saved_views.list(saved_view_module(a.module), limit=a.limit, offset=a.offset)
     return ctx.listing(
-        rows, lambda sv: f"  {sv.get('entityType') or sv.get('module')}: {sv.get('name')}   {sv.get('id')}",
+        # The route returns `module`; `entityType` only ever came from 0.11-era fakes.
+        rows, lambda sv: f"  {sv.get('module') or sv.get('entityType')}: {sv.get('name')}   {sv.get('id')}",
         empty="  (no saved views)",
     )
 
@@ -217,14 +261,15 @@ def cmd_saved_views_list(ctx: Ctx) -> int:
 def cmd_saved_views_create(ctx: Ctx) -> int:
     """NOTE the create field is `module` (leads / contacts / tasks ...), not entityType."""
     a = ctx.args
+    module = saved_view_module(a.module)
     filt = None
     if a.filter:
         try:
             filt = json.loads(a.filter)
         except json.JSONDecodeError as e:
             raise CliError("bad_argument", f"--filter must be valid JSON: {e}") from None
-    data = ctx.client.saved_views.create(a.module, a.name, filt, a.shared)
-    ctx.wrote(f"Created saved view '{a.name}' for {a.module}  ({data.get('id')})", data=data)
+    data = ctx.client.saved_views.create(module, a.name, filt, a.shared)
+    ctx.wrote(f"Created saved view '{a.name}' for {module}  ({data.get('id')})", data=data)
     return 0
 
 
@@ -335,12 +380,15 @@ def register(sub: Any, add: Any) -> None:
     ssv = add(sub, "saved-views", help="saved views")
     ssvs = ssv.add_subparsers(dest="saved_views_cmd", required=True, metavar="ACTION")
     s = add(ssvs, "list", help="list saved views")
-    s.add_argument("--entity", help="filter by entity type")
+    s.add_argument("--module", "--entity", dest="module", metavar="MODULE",
+                   help=f"only views for this module: {'|'.join(SAVED_VIEW_MODULES)} "
+                        "(singular works too; --entity is the 0.12.0 spelling)")
     _paging(s, None)
     s.set_defaults(func=cmd_saved_views_list)
     s = add(ssvs, "create", help="create a saved view")
     s.add_argument("--module", required=True,
-                   help="entity grouping the view belongs to (leads/contacts/tasks/...)")
+                   help=f"the module the view belongs to: {'|'.join(SAVED_VIEW_MODULES)} "
+                        "(singular works too)")
     s.add_argument("--name", required=True, help="view name")
     s.add_argument("--filter", help="filter as a JSON object string")
     s.add_argument("--shared", action="store_true", help="share with the whole mesh")
