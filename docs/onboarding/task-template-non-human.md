@@ -60,17 +60,21 @@ curl -sS \
   https://meshbook.org/api/contacts | jq .
 ```
 
-**Or use `meshbook-cli` directly** (single-file Python, stdlib only —
-runs on a Pi):
+**Or use `meshbook-cli` directly** (pure Python; its only dependency is
+meshbook-sdk, which is stdlib-only, so it still runs on a Pi):
 
 ```bash
-curl -sSL https://meshbook.org/cli/mesh.py -o mesh
-python3 mesh login --token mb_token_…   # or: python3 mesh login (interactive)
-python3 mesh doctor                      # connectivity + auth + active-mesh check
-python3 mesh whoami
-python3 mesh meshes use "Tyl Mesh"
-python3 mesh contacts list
+pip install meshbook-cli                # "meshbook-cli[agent]" for the key lane
+mesh login --token mb_token_…           # or: mesh login (interactive)
+mesh doctor                             # connectivity + auth + mesh check
+mesh whoami
+mesh meshes use "Tyl Mesh"              # persists the active mesh
+mesh --mesh "Other Mesh" contacts list  # one call in another mesh (or MESHBOOK_MESH)
+mesh --json tasks list --sort due       # JSON for any verb, errors included
 ```
+
+(Since 0.12.0 the CLI is a package, not a single file: the old
+`curl .../cli/mesh.py` copy is a 0.1.x snapshot and lacks nearly every verb.)
 
 If your token is revoked (via the SPA), every subsequent call returns
 401 immediately — mint a new one and `mesh login --token` again.
