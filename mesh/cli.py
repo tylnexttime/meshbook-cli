@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """meshbook-cli — the `mesh` command: a small-model-friendly CLI for meshbook.org.
 
-Since 0.12.0 this is a thin shell over meshbook-sdk (>=0.4,<0.5): the SDK owns
+Since 0.12.0 this is a thin shell over meshbook-sdk (>=0.4.1,<0.5): the SDK owns
 the config file, HTTP, the error envelope, the agent lane and name
 resolution; this package owns argument parsing, output and exit codes.
 
