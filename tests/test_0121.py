@@ -179,3 +179,145 @@ def test_cli_hint_texts_carry_no_python():
 
     for text in HINT_TEXT.values():
         assert "()" not in text and "=True" not in text and "before=" not in text, text
+
+
+# ─── cursor paging: --before, never --offset, on the chat routes ────────
+
+import datetime as _dt  # noqa: E402
+
+from tests._fake import CH1, U1  # noqa: E402
+
+FEED = f"/api/entities/mesh/{MESH}/chat"
+CHAN = f"/api/channels/{CH1}/messages"
+
+
+def _msgs(*stamps: str) -> list[dict]:
+    return [{"id": f"m{i}", "createdAt": t, "bodyMd": f"msg {i}", "authorName": "a"}
+            for i, t in enumerate(stamps)]
+
+
+def _dm_routes(api):
+    api.add("GET", "/api/users", ok_list([{"id": U1, "username": "sam", "displayName": "Sam"}]))
+    api.add("POST", f"/api/meshes/{MESH}/dms/with/{U1}", ok({"id": CH1}))
+
+
+@pytest.mark.parametrize("argv, cursor", [
+    (("chat", "list"), True),
+    (("chat", "search", "q"), False),
+    (("channels", "read", CH1), True),
+    (("dm", "read", "sam"), True),
+])
+def test_offset_is_refused_before_anything_is_sent(api, run, argv, cursor):
+    """0.12.0 sent --offset; the server ignored it and the "next page" was the
+    first page again. SDK 0.4.1 refuses offset= there; the CLI refuses first,
+    in its own words, exit 2 like every other bad argument."""
+    r = run(*argv, "--offset", "20")
+    assert r.rc == 2, r.err
+    assert "--offset is not supported" in r.err
+    assert ("--before" in r.err) is cursor
+    assert not api.requests
+    e = run("--json", *argv, "--offset", "20").err_json()["error"]
+    assert e["code"] == "bad_argument"
+    assert e["hintCode"] == ("use_before_cursor" if cursor else "fix_argument")
+    assert e["status"] == 0
+
+
+@pytest.mark.parametrize("argv", [("chat", "list"), ("chat", "search", "q"),
+                                  ("channels", "read", "x"), ("dm", "read", "x")])
+def test_help_offers_no_offset_on_cursor_routes(run, argv):
+    out = run(*argv[:2], "--help").out
+    assert "--offset" not in out
+    assert ("--before" in out) is (argv[1] != "search")
+
+
+def test_chat_list_before_is_sent_as_given(api, run):
+    api.add("GET", FEED, ok_list([]))
+    r = run("chat", "list", "--before", "2026-10-19T07:00:00+00:00", "--limit", "5")
+    assert r.rc == 0, r.err
+    q = api.query(api.one("GET", FEED))
+    assert "offset" not in q and q["limit"] == "5"
+    assert _dt.datetime.fromisoformat(q["before"]) == _dt.datetime(2026, 10, 19, 7, tzinfo=_dt.timezone.utc)
+
+
+def test_a_naive_before_is_this_machines_zone(api, run):
+    """The SDK refuses a naive time; the CLI localises it, as for events."""
+    api.add("GET", FEED, ok_list([]))
+    assert run("chat", "list", "--before", "2026-10-19 07:00").rc == 0
+    sent = _dt.datetime.fromisoformat(api.query(api.one("GET", FEED))["before"])
+    assert sent.utcoffset() is not None
+    assert sent == _dt.datetime(2026, 10, 19, 7).astimezone()
+
+
+def test_a_bad_before_is_a_bad_argument(api, run):
+    r = run("--json", "chat", "list", "--before", "yesterday-ish")
+    assert r.rc == 2
+    assert r.err_json()["error"]["code"] == "bad_argument"
+    assert not api.requests
+
+
+def test_full_page_footer_offers_the_next_before_cursor(api, run):
+    """0.12.0's footer said "more: --offset 2" on routes that ignore offset."""
+    rows = _msgs("2026-10-19T09:00:00+00:00", "2026-10-19T08:00:00Z")
+    api.add("GET", FEED, ok_list(rows, total=2))
+    r = run("chat", "list", "--limit", "2")
+    assert "more: --before 2026-10-19T08:00:00+00:00" in r.out
+    assert "--offset" not in r.out
+    env = run("--json", "chat", "list", "--limit", "2").json()
+    assert env["hasMore"] is True and env["nextBefore"] == "2026-10-19T08:00:00+00:00"
+
+
+def test_footer_cursor_pastes_back_unchanged(api, run):
+    """The printed cursor, passed back as --before, is the same instant."""
+    rows = _msgs("2026-10-19T09:00:00+00:00", "2026-10-19T08:00:00")   # naive = UTC
+    api.add("GET", FEED, ok_list(rows, total=2))
+    cursor = run("--json", "chat", "list", "--limit", "2").json()["nextBefore"]
+    assert cursor == "2026-10-19T08:00:00+00:00"
+    run("chat", "list", "--limit", "2", "--before", cursor)
+    sent = api.query(api.calls("GET", FEED)[-1])["before"]
+    assert _dt.datetime.fromisoformat(sent) == _dt.datetime.fromisoformat(cursor)
+
+
+def test_a_short_page_offers_no_more(api, run):
+    api.add("GET", FEED, ok_list(_msgs("2026-10-19T09:00:00+00:00"), total=1))
+    r = run("chat", "list", "--limit", "20")
+    assert "more" not in r.out
+    assert run("--json", "chat", "list").json()["nextBefore"] is None
+
+
+def test_channels_read_pages_by_before(api, run):
+    rows = _msgs("2026-10-19T09:00:00+00:00", "2026-10-19T08:00:00+00:00")
+    api.add("GET", CHAN, ok_list(rows, total=2))
+    r = run("channels", "read", CH1, "--limit", "2", "--before", "2026-10-20T00:00:00+00:00")
+    assert r.rc == 0, r.err
+    assert "before" in api.query(api.one("GET", CHAN))
+    assert "more: --before 2026-10-19T08:00:00+00:00" in r.out
+    # displayed oldest first
+    assert r.out.index("msg 1") < r.out.index("msg 0")
+
+
+def test_dm_read_pages_by_before(api, run):
+    _dm_routes(api)
+    api.add("GET", CHAN, ok_list(_msgs("2026-10-19T09:00:00+00:00", "2026-10-19T08:00:00+00:00"),
+                                 total=2))
+    r = run("--json", "dm", "read", "sam", "--limit", "2", "--before", "2026-10-20T00:00:00Z")
+    assert r.rc == 0, r.err
+    assert "before" in api.query(api.one("GET", CHAN))
+    assert r.json()["nextBefore"] == "2026-10-19T08:00:00+00:00"
+
+
+def test_search_footer_says_raise_limit_not_offset(api, run):
+    hits = [{"id": f"h{i}", "createdAt": "2026-10-19T09:00:00Z", "preview": "p",
+             "entityType": "mesh"} for i in range(2)]
+    api.add("GET", "/api/chat/search", ok_list(hits, total=2, semantic=True))
+    r = run("chat", "search", "q", "--limit", "2")
+    assert r.rc == 0, r.err
+    assert "--offset" not in r.out
+    assert "more: raise --limit" in r.out
+    assert "offset" not in api.query(api.one("GET", "/api/chat/search"))
+
+
+def test_offset_listings_keep_their_offset_footer(api, run):
+    """Routes that DO page by offset are unchanged."""
+    api.add("GET", "/api/contacts", ok_list([{"id": "c1", "firstName": "A"}] * 2,
+                                            total=10, limit=2, offset=4))
+    assert "more: --offset 6" in run("contacts", "list", "--limit", "2", "--offset", "4").out

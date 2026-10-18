@@ -1,12 +1,51 @@
 """Chat verbs: the mesh feed, channels, DMs, reactions and attachments."""
 from __future__ import annotations
 
+import argparse
 import sys
 from typing import Any
 
 from meshbook import ItemList
 
-from ._core import Ctx, clip, first_line, ts
+from ._core import HINT_TEXT, CliError, Ctx, clip, first_line, oldest_time, ts
+from ._when import parse_when
+
+# ─── cursor paging (SDK 0.4.1) ──────────────────────────────────────────
+
+
+def _refuse_offset(a: Any, verb: str, *, cursor: bool = True) -> None:
+    """``--offset`` on a route that ignores it: refused before anything is sent.
+
+    0.12.0 passed it through and the server silently returned the first page
+    again; meshbook-sdk 0.4.1 refuses ``offset=`` on these routes. The flag is
+    kept (hidden) only so that a script still passing it gets this sentence,
+    exit 2 and ``bad_argument`` like any other refusal, instead of argparse's
+    bare "unrecognized arguments".
+    """
+    if getattr(a, "offset", None) is None:
+        return
+    if cursor:
+        raise CliError(
+            "bad_argument",
+            f"--offset is not supported by `mesh {verb}`: the server ignores it and pages by time.",
+            hint=HINT_TEXT["use_before_cursor"],
+            hint_code="use_before_cursor",
+        )
+    raise CliError(
+        "bad_argument",
+        f"--offset is not supported by `mesh {verb}`: search returns the best matches first "
+        "and takes only a limit.",
+        hint="Pass a larger --limit to see more matches.",
+        hint_code="fix_argument",
+    )
+
+
+def _before(a: Any) -> Any:
+    """``--before TIME`` -> an aware datetime (a time typed without an offset is
+    this machine's zone, as everywhere in the CLI)."""
+    if not getattr(a, "before", None):
+        return None
+    return parse_when(a.before, field="before")[0]
 
 # ─── chat (the mesh feed) ───────────────────────────────────────────────
 
@@ -24,12 +63,15 @@ def cmd_chat_post(ctx: Ctx) -> int:
 
 def cmd_chat_list(ctx: Ctx) -> int:
     a = ctx.args
-    rows = ctx.client.chat.list(a.limit, offset=a.offset)
+    _refuse_offset(a, "chat list")
+    rows = ctx.client.chat.list(a.limit, before=_before(a))
     return ctx.listing(
         rows,
         # 0.11: m.get('bodyMd', '')[:200] raised TypeError on a null body.
         lambda m: f"  [{ts(m.get('createdAt'))}] {_author(m)}: {clip(m.get('bodyMd'), 200)}",
         empty="  (no messages)",
+        paging="before",
+        cursor=oldest_time(rows),
     )
 
 
@@ -38,7 +80,8 @@ def cmd_chat_search(ctx: Ctx) -> int:
     mesh. ``semantic: false`` means the embedding arm was down and results are
     keyword-only (still valid, narrower recall)."""
     a = ctx.args
-    res = ctx.client.chat.search(a.query, a.limit, offset=a.offset)
+    _refuse_offset(a, "chat search", cursor=False)
+    res = ctx.client.chat.search(a.query, a.limit)
     semantic = res.semantic
 
     def row(h: dict[str, Any]) -> list[str]:
@@ -56,7 +99,7 @@ def cmd_chat_search(ctx: Ctx) -> int:
     if not ctx.json and not semantic and len(res):
         print("note: semantic arm off - keyword-only results", file=sys.stderr)
     empty = "  No matches." if semantic else "  No matches (semantic arm was off: keyword-only)."
-    return ctx.listing(res, row, empty=empty, extra={"semantic": semantic})
+    return ctx.listing(res, row, empty=empty, extra={"semantic": semantic}, paging="limit")
 
 
 def cmd_chat_attach(ctx: Ctx) -> int:
@@ -132,9 +175,11 @@ def cmd_channels_list(ctx: Ctx) -> int:
 
 def cmd_channels_read(ctx: Ctx) -> int:
     a = ctx.args
-    rows = ctx.client.channels.read(a.channel, a.limit, offset=a.offset)
+    _refuse_offset(a, "channels read")
+    rows = ctx.client.channels.read(a.channel, a.limit, before=_before(a))
     header = None if ctx.json else f"  {_chan(a.channel)} - newest {len(rows)} message(s), oldest first"
-    return ctx.listing(_oldest_first(rows), _message_line, header=header, empty="  (no messages)")
+    return ctx.listing(_oldest_first(rows), _message_line, header=header, empty="  (no messages)",
+                       paging="before", cursor=oldest_time(rows))
 
 
 def cmd_channels_post(ctx: Ctx) -> int:
@@ -207,12 +252,15 @@ def cmd_dm_list(ctx: Ctx) -> int:
 
 def cmd_dm_read(ctx: Ctx) -> int:
     a = ctx.args
+    _refuse_offset(a, "dm read")
+    before = _before(a)
     c = ctx.client
     user = c.users.resolve(a.user)
-    rows = c.dms.read(str(user["id"]), a.limit, offset=a.offset)
+    rows = c.dms.read(str(user["id"]), a.limit, before=before)
     label = user.get("displayName") or user.get("username") or a.user
     header = None if ctx.json else f"  DM with {label}"
-    return ctx.listing(_oldest_first(rows), _message_line, header=header, empty="  (no messages)")
+    return ctx.listing(_oldest_first(rows), _message_line, header=header, empty="  (no messages)",
+                       paging="before", cursor=oldest_time(rows))
 
 
 def cmd_dm_send(ctx: Ctx) -> int:
@@ -274,6 +322,19 @@ def _paging(s: Any, default: int | None) -> None:
     s.add_argument("--offset", type=int, default=None, help="skip this many rows (paging)")
 
 
+def _cursor_paging(s: Any, default: int | None, *, before: bool = True) -> None:
+    """--limit, plus --before TIME where the route pages by time. --offset is
+    hidden: these routes ignore it, and _refuse_offset explains that."""
+    s.add_argument("--limit", type=int, default=default, help=f"page size (default {default})")
+    if before:
+        s.add_argument(
+            "--before", metavar="TIME",
+            help="only messages older than this (ISO 8601; without an offset it is this "
+                 "machine's zone). Each page's footer prints the value for the next.",
+        )
+    s.add_argument("--offset", type=int, default=None, help=argparse.SUPPRESS)
+
+
 def register(sub: Any, add: Any) -> None:
     ch = add(sub, "chat", help="the mesh feed: post, read, search, react, attach")
     chs = ch.add_subparsers(dest="chat_cmd", required=True, metavar="ACTION")
@@ -283,11 +344,11 @@ def register(sub: Any, add: Any) -> None:
                    help="UUID of a message in this mesh to thread the reply under")
     s.set_defaults(func=cmd_chat_post)
     s = add(chs, "list", help="recent messages in the mesh feed (newest first)")
-    _paging(s, 20)
+    _cursor_paging(s, 20)
     s.set_defaults(func=cmd_chat_list)
     s = add(chs, "search", help="hybrid keyword+semantic search over readable chat (§84)")
     s.add_argument("query", help="what you're looking for: meaning works, not just keywords")
-    _paging(s, 20)
+    _cursor_paging(s, 20, before=False)
     s.set_defaults(func=cmd_chat_search)
     s = add(chs, "attach", help="attach a file to a chat message (§26d-json)")
     s.add_argument("message_id", help="UUID of the message to attach to")
@@ -344,7 +405,7 @@ def register(sub: Any, add: Any) -> None:
     s.set_defaults(func=cmd_channels_list)
     s = add(schs, "read", help="read recent messages in a channel")
     s.add_argument("channel", help="channel name (with or without '#') or UUID")
-    _paging(s, 20)
+    _cursor_paging(s, 20)
     s.set_defaults(func=cmd_channels_read)
     s = add(schs, "post", help="post a message to a channel")
     s.add_argument("channel", help="channel name or UUID")
@@ -384,7 +445,7 @@ def register(sub: Any, add: Any) -> None:
     s.set_defaults(func=cmd_dm_list)
     s = add(sdms, "read", help="read your DM thread with a user")
     s.add_argument("user", help="username, displayName, or UUID")
-    _paging(s, 20)
+    _cursor_paging(s, 20)
     s.set_defaults(func=cmd_dm_read)
     s = add(sdms, "send", help="send a DM (opens the thread if needed)")
     s.add_argument("user", help="username, displayName, or UUID")

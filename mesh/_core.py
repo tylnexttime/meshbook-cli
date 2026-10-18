@@ -350,17 +350,28 @@ class Ctx:
         empty: str = "  (none)",
         header: str | None = None,
         extra: Mapping[str, Any] | None = None,
+        paging: str = "offset",
+        cursor: str | None = None,
     ) -> int:
         """Print a list result: one JSON envelope, or rows plus "N of TOTAL".
 
         JSON shape (every listing, §102.8 "one envelope"):
         ``{"items", "count", "total", "limit", "offset", "hasMore", ...extra}``.
+
+        *paging* says how the next page is reached, so the footer never offers
+        a flag the verb does not have: ``"offset"`` (``--offset N``),
+        ``"before"`` (``--before CURSOR``, the oldest row's time; JSON adds
+        ``nextBefore``) or ``"limit"`` (no next page: only a larger
+        ``--limit``). The chat routes ignore offset (SDK 0.4.1 refuses it), so
+        0.12.0's "more: --offset 20" footer on them pointed at the first page.
         """
         items = list(rows)
         total = getattr(rows, "total", None)
         limit = getattr(rows, "limit", None)
         offset = getattr(rows, "offset", None)
         shown_total, more = _paging(rows, len(items), total, limit, offset)
+        if paging == "before" and not cursor:
+            more = False          # no time to page from: nothing to offer
         if self.json:
             out: dict[str, Any] = {
                 "items": items,
@@ -370,6 +381,8 @@ class Ctx:
                 "offset": offset,
                 "hasMore": more,
             }
+            if paging == "before":
+                out["nextBefore"] = cursor if more else None
             out.update(extra or {})
             self.emit(out)
             return 0
@@ -384,15 +397,24 @@ class Ctx:
             else:
                 for one in line:
                     print(one)
-        footer = count_line(len(items), shown_total, offset, more)
+        footer = count_line(len(items), shown_total, offset, more, paging=paging, cursor=cursor)
         if footer and (items or (shown_total or 0) > 0):
             print(footer)
         return 0
 
 
-def count_line(n: int, total: int | None, offset: int | None, more: bool) -> str:
-    """``  20 of 134 (from 40) — more: --offset 60``."""
-    start = offset or 0
+def count_line(
+    n: int,
+    total: int | None,
+    offset: int | None,
+    more: bool,
+    *,
+    paging: str = "offset",
+    cursor: str | None = None,
+) -> str:
+    """``  20 of 134 (from offset 40) - more: --offset 60``, or for a cursor
+    route ``  20 shown - more: --before 2026-10-19T07:00:00+00:00``."""
+    start = (offset or 0) if paging == "offset" else 0
     if total is not None:
         text = f"  {n} of {total}"
     else:
@@ -400,8 +422,38 @@ def count_line(n: int, total: int | None, offset: int | None, more: bool) -> str
     if start:
         text += f" (from offset {start})"
     if more:
-        text += f" - more: --offset {start + n}"
+        if paging == "before" and cursor:
+            text += f" - more: --before {cursor}"
+        elif paging == "limit":
+            text += " - more: raise --limit"
+        elif paging == "offset":
+            text += f" - more: --offset {start + n}"
     return text
+
+
+def oldest_time(rows: Iterable[Mapping[str, Any]], key: str = "createdAt") -> str | None:
+    """The oldest row's *key* as an aware ISO string: the ``--before`` cursor
+    for the next (older) page. Server times are UTC; one sent without an
+    offset is read as UTC, so the printed cursor never changes meaning when a
+    user pastes it back on a machine in another zone."""
+    import datetime as _dt
+
+    best: _dt.datetime | None = None
+    for row in rows:
+        raw = str((row or {}).get(key) or "").strip()
+        if not raw:
+            continue
+        if raw.endswith(("Z", "z")):
+            raw = raw[:-1] + "+00:00"
+        try:
+            when = _dt.datetime.fromisoformat(raw)
+        except ValueError:
+            continue
+        if when.tzinfo is None or when.tzinfo.utcoffset(when) is None:
+            when = when.replace(tzinfo=_dt.timezone.utc)
+        if best is None or when < best:
+            best = when
+    return best.isoformat() if best is not None else None
 
 
 def _paging(
@@ -499,6 +551,7 @@ __all__ = [
     "hint_for",
     "need_uuid",
     "new_client",
+    "oldest_time",
     "report_error",
     "source_label",
     "split_tags",
