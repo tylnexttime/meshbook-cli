@@ -43,11 +43,34 @@ def _help(capsys, *argv: str) -> str:
     return capsys.readouterr().out
 
 
-def test_version_constant():
-    assert cli.VERSION
-    parts = cli.VERSION.split(".")
-    assert len(parts) >= 2
-    assert parts[0].isdigit()
+def _pyproject_version() -> str:
+    import re
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+    project = text.split("[project]", 1)[1].split("\n[", 1)[0]
+    m = re.search(r'^version\s*=\s*"([^"]+)"', project, re.M)
+    assert m, "no version in pyproject [project]"
+    return m.group(1)
+
+
+def test_version_constant(run, api):
+    """The version is the INSTALLED metadata and must equal pyproject's.
+
+    0.11's test only checked the string's shape, which is how a stale venv
+    reporting 0.1.0 passed it. A mismatch here means a stale install (re-run
+    `pip install -e .`) or a literal crept back in.
+    """
+    import mesh
+
+    want = _pyproject_version()
+    assert cli.VERSION == want
+    assert mesh.__version__ == want
+    assert run("--version").out.strip() == f"meshbook-cli {want}"
+    api.add("GET", "/api/me", ok({"user": {"username": "x"}}))
+    run("whoami")
+    ua = api.header(api.one("GET", "/api/me"), "User-Agent")
+    assert ua.startswith(f"meshbook-cli/{want} meshbook-sdk/")
 
 
 def test_help_runs(capsys):
