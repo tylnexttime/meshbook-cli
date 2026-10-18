@@ -11,7 +11,17 @@ from meshbook import VERSION as SDK_VERSION
 from meshbook import ItemList, MeshbookError
 from meshbook import config as mbconfig
 
-from ._core import AGENT_INSTALL, CliError, Ctx, clip, new_client, source_label, ts
+from ._core import (
+    AGENT_INSTALL,
+    CliError,
+    Ctx,
+    cli_message,
+    clip,
+    hint_for,
+    new_client,
+    source_label,
+    ts,
+)
 from ._version import VERSION
 
 # ─── login / logout / whoami / doctor ───────────────────────────────────
@@ -57,11 +67,14 @@ def cmd_login(ctx: Ctx) -> int:
     user = me.get("user") or {}
     if not user:
         raise CliError("no_user", "Authenticated, but /api/me returned no user.", exit_code=1)
-    mbconfig.save_config({"base": client.base, "token": token})
+    moved = _save_login(ctx, {"base": client.base, "token": token})
     if ctx.json:
         ctx.emit({"ok": True, "user": user, "base": client.base,
-                  "configPath": str(mbconfig.config_path())})
+                  "configPath": str(mbconfig.config_path()),
+                  "quarantined": str(moved) if moved else None})
         return 0
+    if moved:
+        print(f"Moved the unreadable config aside to {moved}")
     print(f"Signed in as @{user.get('username')} "
           f"({user.get('displayName')}, {user.get('identityType')})")
     print(f"Token saved to {mbconfig.config_path()}")
@@ -85,13 +98,31 @@ def _login_agent(ctx: Ctx) -> int:
         if e.code == "missing_dependency":
             raise
         raise CliError("agent_rejected", f"Agent lane rejected: {e.message}", exit_code=1) from e
-    mbconfig.save_config({"base": client.base, "auth_mode": "agent"})
+    moved = _save_login(ctx, {"base": client.base, "auth_mode": "agent"})
     if ctx.json:
-        ctx.emit({"ok": True, "user": user.raw, "authMode": "agent"})
+        ctx.emit({"ok": True, "user": user.raw, "authMode": "agent",
+                  "quarantined": str(moved) if moved else None})
         return 0
+    if moved:
+        print(f"Moved the unreadable config aside to {moved}")
     print(f"Signed in as @{user.username} via the agent-JWT lane.")
     print(f"auth_mode saved to {mbconfig.config_path()}: every verb now self-mints.")
     return 0
+
+
+def _save_login(ctx: Ctx, updates: dict[str, Any]) -> Any:
+    """Persist a verified login. Returns where a broken config was moved, if any.
+
+    meshbook-sdk 0.4.1 never writes over a config it cannot parse (it may be a
+    half-written file that still holds a token): saving raises
+    ``config_unreadable``. ``--repair-config`` is the explicit "yes, move it
+    aside" (``config.bad.<UTC time>``, never overwriting an earlier copy), and
+    it runs only after the new credential has been proven, so a bad token
+    never costs the old file its place.
+    """
+    moved = mbconfig.quarantine_config() if getattr(ctx.args, "repair_config", False) else None
+    mbconfig.save_config(updates)
+    return moved
 
 
 def cmd_logout(ctx: Ctx) -> int:
@@ -139,6 +170,11 @@ def cmd_whoami(ctx: Ctx) -> int:
     return 0
 
 
+def _err(e: MeshbookError) -> dict[str, Any]:
+    """An SDK error as doctor's JSON reports it: the CLI's words plus the SDK's hint."""
+    return {"code": e.code, "message": cli_message(e), "hint": hint_for(e), "hintCode": e.hint}
+
+
 def cmd_doctor(ctx: Ctx) -> int:
     """Connectivity, auth and mesh sanity. Run first on a cold boot."""
     c = ctx.client
@@ -161,14 +197,20 @@ def cmd_doctor(ctx: Ctx) -> int:
     report["authLane"] = c.auth_mode
     lines.append(f"  auth lane:     {lane}")
     rc = 0
+    cfg_err = getattr(c, "config_error", None)
+    if cfg_err is not None:
+        # SDK 0.4.1 (C-40): a broken config is reported as such, not as "no token".
+        report["configError"] = _err(cfg_err)
+        lines.append(f"  config:        ! {cli_message(cfg_err)}")
+        lines.append(f"                 {hint_for(cfg_err)}")
     try:
         c.health()
         report["reachable"] = True
         lines.append("  reachable:     yes")
     except MeshbookError as e:
         report["reachable"] = False
-        report["error"] = {"code": e.code, "message": e.message}
-        lines.append(f"  reachable:     NO - {e.message}")
+        report["error"] = _err(e)
+        lines.append(f"  reachable:     NO - {cli_message(e)}")
         rc = 1
     if rc == 0:
         try:
@@ -179,16 +221,17 @@ def cmd_doctor(ctx: Ctx) -> int:
             report["serverActiveMesh"] = me.get("activeMeshId")
         except MeshbookError as e:
             report["user"] = None
-            report["error"] = {"code": e.code, "message": e.message}
-            lines.append(f"  authenticated: NO - {e.message}  (run `mesh login`)")
+            report["error"] = _err(e)
+            advice = "" if e.code == "config_unreadable" else "  (run `mesh login`)"
+            lines.append(f"  authenticated: NO - {cli_message(e)}{advice}")
             rc = 1
     if rc == 0:
         try:
             mid = c.active_mesh_id
         except MeshbookError as e:
             mid = None
-            lines.append(f"  mesh:          NO - {e.message}")
-            report["error"] = {"code": e.code, "message": e.message}
+            lines.append(f"  mesh:          NO - {cli_message(e)}")
+            report["error"] = _err(e)
             rc = 1
         if mid:
             mid, name, source = _mesh_in_effect(ctx)
@@ -490,6 +533,9 @@ def register(sub: Any, add: Any) -> None:
                    help="use the enrolled agent key as the everyday login (no bearer needed)")
     s.add_argument("--base", help="meshbook base URL (default: MESHBOOK_BASE, the config, "
                                   "or https://meshbook.org)")
+    s.add_argument("--repair-config", action="store_true",
+                   help="if the config file cannot be read, move it aside (config.bad.<time>) "
+                        "and save a fresh one; only after the new login is verified")
     s.set_defaults(func=cmd_login)
 
     s = add(sub, "logout", help="clear the config file (agent keys are kept)")

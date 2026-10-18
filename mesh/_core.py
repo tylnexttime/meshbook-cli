@@ -67,12 +67,23 @@ class CliError(Exception):
     ``{"ok": false, "error": {...}}`` on stderr under ``--json``.
     """
 
-    def __init__(self, code: str, message: str, *, exit_code: int = 2, hint: str | None = None):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        exit_code: int = 2,
+        hint: str | None = None,
+        hint_code: str | None = None,
+    ):
         super().__init__(message)
         self.code = code
         self.message = message
         self.exit_code = exit_code
         self.hint = hint
+        #: The SDK-style machine hint, when the CLI refuses something the SDK
+        #: would refuse the same way (``use_before_cursor`` for --offset).
+        self.hint_code = hint_code
         self.status = 0
 
 
@@ -93,6 +104,11 @@ EXIT_CODES = {
     "no_agent_key": 2,
     "key_exists": 2,
     "missing_dependency": 3,
+    # SDK 0.4.1: local refusals, nothing written (or, for a config, nothing sent).
+    "config_unreadable": 2,
+    "insecure_base": 2,
+    "file_exists": 2,
+    "unsafe_path": 2,
 }
 
 HINTS = {
@@ -123,6 +139,85 @@ HINTS = {
     "reader_cannot_edit": "Your role in this mesh is read-only.",
 }
 
+#: CLI wording for meshbook-sdk's machine hints (``MeshbookError.hint``, SDK
+#: 0.4.1). The SDK's messages are written for Python callers and may name
+#: arguments (``overwrite=True``, ``before=``) or functions; the hint is the
+#: stable channel, so the CLI branches on it, never on message text, and says
+#: the same thing in flags. A hint listed here beats the per-code text in
+#: :data:`HINTS`, because a raise site sets a specific hint only when the
+#: code's default advice would be wrong (a write that may have landed is a
+#: ``network_error`` too, but "retry" is the wrong advice for it).
+HINT_TEXT = {
+    "use_before_cursor": (
+        "This list pages by time, not by offset: pass --before TIME (the last page's "
+        "footer prints the exact value)."
+    ),
+    "allow_overwrite": "Pass --overwrite to replace it, or --out to save somewhere else.",
+    "choose_out_path": (
+        "The server's file name was unsafe for that directory. Pass --out with a file "
+        "path to choose the name yourself."
+    ),
+    "check_before_retry": (
+        "The write may already have reached the server: check (list / show) before "
+        "running it again."
+    ),
+    "reauthenticate": (
+        "The server rejected your credential. Run: mesh login  (or, for a key-holding "
+        "seat: mesh agent token)"
+    ),
+    "fix_config": (
+        "Fix the file by hand, or move it aside and sign in again:  mesh login "
+        "--repair-config  (the broken file is kept as config.bad.<time>)"
+    ),
+    "resolve_pending_key": (
+        "Try it with:  mesh agent token  (a pending key the server accepts is kept). "
+        "If the enroll never reached the server, delete the .pending files beside the key."
+    ),
+    "fix_base_url": (
+        "Check --base / MESHBOOK_BASE / the config's base: it must be https:// on the "
+        "apex host (plain http only for localhost)."
+    ),
+    "install_agent_extra": HINTS["missing_dependency"],
+}
+
+
+def cli_message(err: MeshbookError | CliError) -> str:
+    """The sentence a person reads. The SDK's, except where its wording is
+    Python (a function to call) and the CLI has a flag for it instead. Chosen
+    by hint, never by matching the message text."""
+    if isinstance(err, CliError):
+        return err.message
+    hint = getattr(err, "hint", None)
+    if hint == "install_agent_extra" or err.code == "missing_dependency":
+        # The SDK names its own extra; this tool's users install the CLI's.
+        return f"mesh agent needs the optional `cryptography` package. Install it with:  {AGENT_INSTALL}"
+    if hint == "fix_config":
+        from meshbook import config as mbconfig
+
+        return (f"{mbconfig.config_path()} exists but cannot be read as a meshbook config. "
+                "It was left untouched (it may still hold your token).")
+    if hint == "resolve_pending_key":
+        return ("An earlier `mesh agent enroll` / `register` left an unconfirmed agent key "
+                "(the server may already be using it).")
+    if hint == "use_before_cursor":
+        return "--offset is not supported here: the server ignores it."
+    return err.message
+
+
+def hint_for(err: MeshbookError | CliError) -> str | None:
+    """The CLI's advice line: the CLI's own, else by SDK hint, else by code."""
+    if isinstance(err, CliError):
+        return err.hint
+    sdk_hint = getattr(err, "hint", None)
+    if sdk_hint in HINT_TEXT:
+        return HINT_TEXT[sdk_hint]
+    text = HINTS.get(err.code)
+    if text is None and getattr(err, "status", 0) == 401:
+        # A bare FastAPI 401 ({"detail": ...}) is http_error to the SDK, whose
+        # default hint for that code is check_status, not reauthenticate.
+        return HINT_TEXT["reauthenticate"]
+    return text
+
 
 def _unknown_route(err: MeshbookError | CliError) -> bool:
     """FastAPI's own answer for a route it does not have: 405, or a 404 whose
@@ -142,20 +237,23 @@ def exit_code_for(err: MeshbookError | CliError) -> int:
 
 def report_error(err: MeshbookError | CliError, *, as_json: bool) -> int:
     """Print an error to stderr (JSON under --json) and return the exit code."""
-    hint = err.hint if isinstance(err, CliError) else HINTS.get(err.code)
+    hint = hint_for(err)
     if hint is None and _unknown_route(err):
+        # The one text match left: FastAPI's own bare 404 for a route it does not
+        # have. The SDK gives every 404 without a machine code the same hint
+        # (check_status), so the hint cannot tell a missing route from a route's
+        # own HTTPException; the framework's exact "Not Found" body can.
         hint = ("This server does not have that route: it may predate meshbook-cli "
                 f"{VERSION} (event edits and project members need the 2026-10-19 server).")
-    if err.code == "missing_dependency":
-        # The SDK names its own extra; this tool's users install the CLI's.
-        message = f"mesh agent needs the optional `cryptography` package. Install it with:  {AGENT_INSTALL}"
-    else:
-        message = err.message
+    message = cli_message(err)
     status = getattr(err, "status", 0) or 0
     if as_json:
         payload = {
             "ok": False,
-            "error": {"code": err.code, "message": message, "hint": hint, "status": status},
+            # hintCode: the SDK's stable machine hint (snake_case; None for most of
+            # the CLI's own refusals), for scripts that branch; hint is for people.
+            "error": {"code": err.code, "message": message, "hint": hint, "status": status,
+                      "hintCode": err.hint_code if isinstance(err, CliError) else err.hint},
         }
         print(json.dumps(payload), file=sys.stderr)
     else:
@@ -395,8 +493,10 @@ __all__ = [
     "clip",
     "configure_stdio",
     "count_line",
+    "cli_message",
     "exit_code_for",
     "first_line",
+    "hint_for",
     "need_uuid",
     "new_client",
     "report_error",

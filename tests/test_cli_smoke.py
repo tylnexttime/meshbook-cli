@@ -308,12 +308,22 @@ def test_config_round_trip(api, run, _isolated_env):
     assert read_config() == {}
 
 
-def test_corrupt_config_returns_empty(api, run, _isolated_env):
-    """A garbled config file does not crash the CLI: it reads as signed out."""
-    (_isolated_env / "config").write_text("{ not valid json", encoding="utf-8")
+def test_corrupt_config_is_reported_not_read_as_signed_out(api, run, _isolated_env):
+    """A garbled config file does not crash the CLI, and nothing is sent.
+
+    0.12.0 (on meshbook-sdk 0.4.0) read it as signed out. Since SDK 0.4.1
+    (C-40) a broken file is reported as broken, with its path, because it may
+    be a half-written file that still holds the token; the CLI says how to
+    repair it in flags (exit 2: a local problem), never in Python."""
+    path = _isolated_env / "config"
+    path.write_text("{ not valid json", encoding="utf-8")
     r = run("whoami")
-    assert r.rc == 2
-    assert "mesh login" in r.err
+    assert r.rc == 2, r.err
+    assert str(path) in r.err
+    assert "mesh login --repair-config" in r.err
+    assert "quarantine_config(" not in r.err          # the SDK's Python wording
+    assert not api.requests                            # nothing sent
+    assert path.read_text(encoding="utf-8") == "{ not valid json"   # untouched
 
 
 def test_invalid_token_does_not_persist(api, run):
