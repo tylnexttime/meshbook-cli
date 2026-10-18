@@ -19,6 +19,8 @@ requirement" below.
   method. What the SDK brings with it: 429/503 retries with `Retry-After` (GET/PUT/
   DELETE only), atomic locked config writes in UTF-8 that preserve unknown keys,
   `MESHBOOK_TOKEN` honoured, and refusal instead of guessing when a name is ambiguous.
+- **`tzdata` is a runtime dependency on Windows only**, so `--tz Area/City` works and
+  recurring events keep their local wall-clock time there without an extra install.
 - **New `[agent]` extra**: `pip install "meshbook-cli[agent]"` for `mesh agent ...`.
   Without it, those verbs exit 3 and print exactly that line.
 - Names accepted where 0.11 wanted UUIDs: `tasks create/list --project NAME|CODE`,

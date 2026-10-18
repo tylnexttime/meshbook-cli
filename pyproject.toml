@@ -36,6 +36,9 @@ requires-python = ">=3.10"
 # reaches into nothing private, but a minor bump is where the SDK may move.
 dependencies = [
     "meshbook-sdk>=0.4,<0.5",
+    # Windows ships no IANA zone database, so without this `--tz Area/City`
+    # failed and recurring events expanded on UTC. Pure data, Windows only.
+    "tzdata; sys_platform == 'win32'",
 ]
 
 [project.urls]
