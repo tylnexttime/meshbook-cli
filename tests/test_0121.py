@@ -539,3 +539,26 @@ def test_a_loopback_http_base_is_still_allowed(api, run):
     api.add("GET", "/api/me", ok({"authenticated": True, "user": {"username": "c"}}))
     r = run("login", "--token", "mb_token_x", "--base", "http://localhost:8000")
     assert r.rc == 0, r.err
+
+
+@pytest.mark.parametrize("code, hint, must, must_not", [
+    ("pending_key", None, "mesh agent token", "recover_pending("),
+    ("missing_dependency", None, "meshbook-cli[agent]", "meshbook-sdk[agent]"),
+    ("bad_argument", "use_before_cursor", "--before", "before="),
+    ("file_exists", None, "--overwrite", "overwrite=True"),
+])
+def test_sdk_python_wording_never_reaches_the_terminal(capsys, code, hint, must, must_not):
+    """Messages chosen by hint: the SDK's sentence names Python calls."""
+    from meshbook import MeshbookError
+
+    from mesh._core import report_error
+
+    sdk_msg = {"pending_key": "Call client.agent.recover_pending() to try it.",
+               "missing_dependency": "pip install meshbook-sdk[agent]",
+               "bad_argument": "chat.list() does not support offset=: pages by limit= and before=.",
+               "file_exists": "x already exists; not overwritten."}[code]
+    for as_json in (False, True):
+        rc = report_error(MeshbookError(code, sdk_msg, hint=hint), as_json=as_json)
+        err = capsys.readouterr().err
+        assert must in err and must_not not in err, err
+        assert rc in (2, 3) if code != "pending_key" else rc == 1
