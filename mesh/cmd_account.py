@@ -5,6 +5,7 @@ from __future__ import annotations
 import getpass
 import importlib.util
 import sys
+import warnings
 from typing import Any
 
 from meshbook import VERSION as SDK_VERSION
@@ -273,7 +274,12 @@ def cmd_meshes_list(ctx: Ctx) -> int:
 def cmd_meshes_use(ctx: Ctx) -> int:
     name = ctx.args.name
     try:
-        found = ctx.client.meshes.use(name, persist=True)
+        with warnings.catch_warnings():
+            # SDK 0.4.1 warns (UserWarning) when MESHBOOK_MESH names another
+            # mesh; Python would print it with a file path and line number.
+            # The CLI says it in its own words below, from found.env_override.
+            warnings.simplefilter("ignore", UserWarning)
+            found = ctx.client.meshes.use(name, persist=True)
     except MeshbookError as e:
         if e.code == "token_out_of_scope":
             raise CliError(
@@ -283,11 +289,15 @@ def cmd_meshes_use(ctx: Ctx) -> int:
                      "restriction: mesh agent enroll && mesh agent token",
             ) from e
         raise
+    override = getattr(found, "env_override", None)
     if ctx.json:
-        ctx.emit(found.raw)
+        ctx.emit(dict(found.raw, envOverride=override) if override else found.raw)
         return 0
     print(f"Active mesh: {found.name} ({found.id})")
     print(f"  saved to {mbconfig.config_path()}; override per call with --mesh or MESHBOOK_MESH")
+    if override:
+        print(f"  ! MESHBOOK_MESH={override} is set in this shell and beats the saved mesh on "
+              "every call until you unset it.", file=sys.stderr)
     return 0
 
 

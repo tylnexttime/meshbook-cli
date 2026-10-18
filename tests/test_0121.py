@@ -476,3 +476,66 @@ def test_cli_modules_match_the_server_constraint():
     assert m is not None
     server = {x.strip().strip("'") for x in m.group(1).split(",")}
     assert server == set(SAVED_VIEW_MODULES)
+
+
+# ─── the rest of SDK 0.4.1's behaviour changes, as the CLI shows them ───
+
+from tests._fake import MESH2, meshes_payload  # noqa: E402
+
+
+def test_an_empty_mesh_flag_is_refused_not_ignored(api, run):
+    """0.12.0 turned --mesh "" into "no flag" and quietly used the config's
+    mesh: the very fallthrough the SDK closed in 0.4.1 (C-10)."""
+    api.add("GET", "/api/tasks", ok_list([]))
+    r = run("--json", "--mesh", "", "tasks", "list")
+    assert r.rc == 2, r.err
+    assert r.err_json()["error"]["code"] == "bad_argument"
+    assert not api.calls("GET", "/api/tasks")
+
+
+def test_an_empty_meshbook_mesh_is_refused(api, run, monkeypatch):
+    """A script that exports MESHBOOK_MESH= to mean "unset" now gets told."""
+    monkeypatch.setenv("MESHBOOK_MESH", "")
+    api.add("GET", "/api/tasks", ok_list([]))
+    r = run("tasks", "list")
+    assert r.rc == 2, r.err
+    assert "MESHBOOK_MESH" in r.err
+    assert not api.calls("GET", "/api/tasks")
+
+
+def test_meshes_use_says_when_meshbook_mesh_will_win(api, run, monkeypatch, recwarn):
+    monkeypatch.setenv("MESHBOOK_MESH", "Other")
+    api.add("GET", "/api/meshes", meshes_payload((MESH, "Test Mesh"), (MESH2, "Other")))
+    api.add("POST", "/api/meshes/active", ok({}))
+    r = run("meshes", "use", "Test Mesh")
+    assert r.rc == 0, r.err
+    assert "MESHBOOK_MESH=Other is set in this shell" in r.err
+    assert "UserWarning" not in r.err
+    assert not [w for w in recwarn if issubclass(w.category, UserWarning)]
+    j = run("--json", "meshes", "use", "Test Mesh")
+    assert j.json()["envOverride"] == "Other"
+
+
+def test_meshes_use_without_an_override_says_nothing_extra(api, run):
+    api.add("POST", "/api/meshes/active", ok({}))
+    r = run("meshes", "use", "Test Mesh")
+    assert r.rc == 0, r.err
+    assert "MESHBOOK_MESH=" not in r.err
+    assert "envOverride" not in run("--json", "meshes", "use", "Test Mesh").json()
+
+
+@pytest.mark.parametrize("base", ["http://192.168.1.5:8000", "http://meshbook.org"])
+def test_a_plain_http_base_is_refused_locally(api, run, base):
+    """SDK 0.4.1: the token never crosses the network unencrypted."""
+    r = run("--json", "login", "--token", "mb_token_x", "--base", base)
+    assert r.rc == 2, r.err
+    e = r.err_json()["error"]
+    assert (e["code"], e["hintCode"]) == ("insecure_base", "fix_base_url")
+    assert "https" in e["hint"]
+    assert not api.requests
+
+
+def test_a_loopback_http_base_is_still_allowed(api, run):
+    api.add("GET", "/api/me", ok({"authenticated": True, "user": {"username": "c"}}))
+    r = run("login", "--token", "mb_token_x", "--base", "http://localhost:8000")
+    assert r.rc == 0, r.err

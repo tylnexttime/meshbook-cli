@@ -291,7 +291,10 @@ class Ctx:
     def __init__(self, args: Any):
         self.args = args
         self.json: bool = bool(getattr(args, "json", False))
-        self.mesh_ref: str | None = getattr(args, "mesh", None) or None
+        # An empty --mesh "" is passed on, not dropped: SDK 0.4.1 refuses an
+        # empty mesh (bad_argument, C-10) instead of falling through to
+        # MESHBOOK_MESH or the config, which is what `or None` did in 0.12.0.
+        self.mesh_ref: str | None = getattr(args, "mesh", None)
         self._client: Client | None = None
 
     @property
