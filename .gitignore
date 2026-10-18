@@ -37,3 +37,6 @@ Thumbs.db
 # Local CLI state (only ever stored under ~/.meshbook anyway, but be safe)
 .meshbook/
 venv-test/
+
+# Contract-check scratch (CI writes the recorded calls here)
+build/contract-calls.json
