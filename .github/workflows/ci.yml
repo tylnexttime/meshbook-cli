@@ -7,7 +7,7 @@ on:
   pull_request:
     branches: [main]
 
-# meshbook-cli 0.12.1 depends on meshbook-sdk>=0.4.1,<0.5 from PyPI: the SDK
+# meshbook-cli 0.12.2 depends on meshbook-sdk>=0.4.2,<0.5 from PyPI: the SDK
 # must be published before this workflow can install the CLI.
 
 jobs:

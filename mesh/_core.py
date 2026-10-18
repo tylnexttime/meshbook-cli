@@ -3,7 +3,7 @@ errors and stdio.
 
 Since 0.12.0 the CLI owns no HTTP, no config file handling, no envelope
 parsing, no error mapping, no agent lane and no name resolution: all of that
-is meshbook-sdk (>=0.4.1). What is left here is what only a command-line tool
+is meshbook-sdk (>=0.4.2). What is left here is what only a command-line tool
 needs: turning results into lines (or JSON), turning errors into exit codes,
 and making sure printing can never crash.
 """
@@ -178,6 +178,12 @@ HINT_TEXT = {
         "apex host (plain http only for localhost)."
     ),
     "install_agent_extra": HINTS["missing_dependency"],
+    # SDK 0.4.2: a registry route answered with FastAPI's own 404/405, i.e.
+    # the server does not have the route yet. 0.12.1 text-matched "Not Found".
+    "server_too_old": (
+        f"This server does not have that route: it is older than meshbook-cli {VERSION} "
+        "(event edits and project members need the 2026-10-19 server)."
+    ),
 }
 
 
@@ -211,22 +217,10 @@ def hint_for(err: MeshbookError | CliError) -> str | None:
     sdk_hint = getattr(err, "hint", None)
     if sdk_hint in HINT_TEXT:
         return HINT_TEXT[sdk_hint]
-    text = HINTS.get(err.code)
-    if text is None and getattr(err, "status", 0) == 401:
-        # A bare FastAPI 401 ({"detail": ...}) is http_error to the SDK, whose
-        # default hint for that code is check_status, not reauthenticate.
-        return HINT_TEXT["reauthenticate"]
-    return text
-
-
-def _unknown_route(err: MeshbookError | CliError) -> bool:
-    """FastAPI's own answer for a route it does not have: 405, or a 404 whose
-    body is the framework's bare ``{"detail": "Not Found"}`` (our routes say
-    ``not_found`` in the envelope instead)."""
-    status = getattr(err, "status", 0)
-    if status == 405:
-        return True
-    return status == 404 and err.code == "http_error" and err.message == "Not Found"
+    # SDK 0.4.2 gives every 401 (FastAPI's bare one included) reauthenticate,
+    # and a missing route server_too_old, so 0.12.1's two fallbacks (a 401
+    # check and a match on the text "Not Found") are gone.
+    return HINTS.get(err.code)
 
 
 def exit_code_for(err: MeshbookError | CliError) -> int:
@@ -238,13 +232,6 @@ def exit_code_for(err: MeshbookError | CliError) -> int:
 def report_error(err: MeshbookError | CliError, *, as_json: bool) -> int:
     """Print an error to stderr (JSON under --json) and return the exit code."""
     hint = hint_for(err)
-    if hint is None and _unknown_route(err):
-        # The one text match left: FastAPI's own bare 404 for a route it does not
-        # have. The SDK gives every 404 without a machine code the same hint
-        # (check_status), so the hint cannot tell a missing route from a route's
-        # own HTTPException; the framework's exact "Not Found" body can.
-        hint = ("This server does not have that route: it may predate meshbook-cli "
-                f"{VERSION} (event edits and project members need the 2026-10-19 server).")
     message = cli_message(err)
     status = getattr(err, "status", 0) or 0
     if as_json:

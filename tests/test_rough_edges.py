@@ -287,7 +287,7 @@ def test_unknown_route_says_the_server_may_predate_the_client(api, run, resp):
     api.add("PATCH", f"/api/calendar-events/{E1}", Err(resp["status"], resp["payload"]))
     r = run("events", "update", E1, "--title", "x")
     assert r.rc == 1
-    assert "may predate meshbook-cli" in r.err
+    assert "older than meshbook-cli" in r.err
 
 
 def test_our_own_not_found_is_not_called_an_unknown_route(api, run):

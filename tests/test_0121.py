@@ -26,7 +26,9 @@ def test_every_sdk_requirement_has_the_041_floor():
     specs = _sdk_specs()
     assert len(specs) == 3, specs
     for spec in specs:
-        assert ">=0.4.1,<0.5" in spec, spec
+        # 0.12.2 raised the floor to 0.4.2 (test_0122); it may never drop below 0.4.1.
+        floor = re.search(r">=0\.4\.(\d+),<0\.5", spec)
+        assert floor and int(floor.group(1)) >= 1, spec
 
 
 def test_the_installed_sdk_meets_the_floor():
@@ -119,9 +121,9 @@ def test_doctor_names_a_broken_config(api, run, _isolated_env):
      "reauthenticate"),
     # /api/me's 200 + authenticated:false shape
     (ok({"authenticated": False}), "reauthenticate"),
-    # FastAPI's bare {"detail": ...}: the SDK maps it to http_error, whose default
-    # hint is check_status; the CLI still knows a 401 means sign in again
-    (Err(401, {"detail": "Invalid token"}), "check_status"),
+    # FastAPI's bare {"detail": ...}: http_error; since SDK 0.4.2 every 401
+    # gets reauthenticate (0.12.1 had a CLI-side fallback for this)
+    (Err(401, {"detail": "Invalid token"}), "reauthenticate"),
 ])
 def test_a_rejected_credential_gets_the_reauthenticate_advice(api, run, resp, hint_code):
     api.add("GET", "/api/me", resp)
