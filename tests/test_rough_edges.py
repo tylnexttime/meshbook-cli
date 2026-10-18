@@ -296,3 +296,24 @@ def test_keyword_only_note_goes_to_stderr(api, run):
     r = run("chat", "search", "x")
     assert "semantic arm off" in r.err
     assert "semantic arm off" not in r.out
+
+
+def test_last_full_page_with_a_true_total_has_no_more(api, run):
+    """meshbook-sdk's ItemList.has_more is True on every full page; with the
+    server's true total (10, offset 8, 2 rows) the CLI knows this is the end."""
+    rows = [{"id": f"c{i}", "displayName": f"C{i}"} for i in range(2)]
+    api.add("GET", "/api/contacts", ok_list(rows, total=10, limit=2, offset=8))
+    r = run("contacts", "list", "--limit", "2", "--offset", "8")
+    assert "2 of 10 (from offset 8)" in r.out and "more" not in r.out
+    assert run("--json", "contacts", "list", "--limit", "2", "--offset", "8").json()["hasMore"] is False
+
+
+def test_a_page_length_total_from_an_older_server_is_not_shown_as_fact(api, run):
+    """Before the 2026-10-19 server, list `total` was the page length: a full
+    page reading "2 of 2" would hide the next page."""
+    rows = [{"id": f"c{i}", "displayName": f"C{i}"} for i in range(2)]
+    api.add("GET", "/api/contacts", ok_list(rows, total=2))
+    r = run("contacts", "list", "--limit", "2")
+    assert "2 shown - more: --offset 2" in r.out
+    env = run("--json", "contacts", "list", "--limit", "2").json()
+    assert env["total"] == 2 and env["hasMore"] is True      # JSON keeps the server's number

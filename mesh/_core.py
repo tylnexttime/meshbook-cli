@@ -262,7 +262,7 @@ class Ctx:
         total = getattr(rows, "total", None)
         limit = getattr(rows, "limit", None)
         offset = getattr(rows, "offset", None)
-        more = _has_more(rows, len(items), total, offset)
+        shown_total, more = _paging(rows, len(items), total, limit, offset)
         if self.json:
             out: dict[str, Any] = {
                 "items": items,
@@ -286,8 +286,8 @@ class Ctx:
             else:
                 for one in line:
                     print(one)
-        footer = count_line(len(items), total, offset, more)
-        if footer and (items or (total or 0) > 0):
+        footer = count_line(len(items), shown_total, offset, more)
+        if footer and (items or (shown_total or 0) > 0):
             print(footer)
         return 0
 
@@ -306,10 +306,24 @@ def count_line(n: int, total: int | None, offset: int | None, more: bool) -> str
     return text
 
 
-def _has_more(rows: Any, n: int, total: int | None, offset: int | None) -> bool:
-    if total is not None:
-        return total > (offset or 0) + n or bool(getattr(rows, "truncated", False))
-    return bool(getattr(rows, "has_more", False))
+def _paging(
+    rows: Any, n: int, total: int | None, limit: int | None, offset: int | None
+) -> tuple[int | None, bool]:
+    """(total worth showing, is there more?).
+
+    The 2026-10-19 server reports TRUE totals, so a known total decides. But a
+    server from before it reported the PAGE length as ``total``: a full page
+    whose total equals its own length is that ambiguity, so the total is not
+    shown as a fact and "more" is assumed (an empty next page is the cost). The
+    SDK's ``ItemList.has_more`` says True on every full page, even when a true
+    total proves it is the last one.
+    """
+    truncated = bool(getattr(rows, "truncated", False))
+    if total is None:
+        return None, bool(getattr(rows, "has_more", False))
+    if limit is not None and n >= limit and total == n:
+        return None, True
+    return total, total > (offset or 0) + n or truncated
 
 
 def _json_default(obj: Any) -> Any:
