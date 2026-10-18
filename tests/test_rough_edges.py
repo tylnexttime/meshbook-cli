@@ -285,3 +285,14 @@ def test_our_own_not_found_is_not_called_an_unknown_route(api, run):
     r = run("events", "show", E1)
     assert r.rc == 1 and "Event not found" in r.err
     assert "predate" not in r.err
+
+
+def test_keyword_only_note_goes_to_stderr(api, run):
+    """The "semantic arm off" note is a diagnostic: stderr, so `| grep` sees hits only
+    (0.11 behaviour, briefly lost in the port)."""
+    api.add("GET", "/api/chat/search", ok_list([{"id": "m1", "entityType": "mesh",
+                                                  "preview": "hit", "matchedArms": ["fts_en"]}],
+                                                semantic=False))
+    r = run("chat", "search", "x")
+    assert "semantic arm off" in r.err
+    assert "semantic arm off" not in r.out

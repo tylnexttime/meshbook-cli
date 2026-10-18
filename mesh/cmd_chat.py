@@ -1,6 +1,7 @@
 """Chat verbs: the mesh feed, channels, DMs, reactions and attachments."""
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from meshbook import ItemList
@@ -53,7 +54,7 @@ def cmd_chat_search(ctx: Ctx) -> int:
                 f"      id={h.get('id')}"]
 
     if not ctx.json and not semantic and len(res):
-        print("note: semantic arm off - keyword-only results")
+        print("note: semantic arm off - keyword-only results", file=sys.stderr)
     empty = "  No matches." if semantic else "  No matches (semantic arm was off: keyword-only)."
     return ctx.listing(res, row, empty=empty, extra={"semantic": semantic})
 

@@ -43,15 +43,17 @@ def _task_line(t: dict[str, Any]) -> str:
 def cmd_tasks_list(ctx: Ctx) -> int:
     a = ctx.args
     c = ctx.client
+    assignee = a.assignee
     if a.mine:
         if a.assignee:
             raise CliError("bad_argument", "Pass --mine or --assignee, not both.")
-        rows = c.tasks.list_mine(status=a.status, limit=a.limit, offset=a.offset, sort=a.sort)
-    else:
-        rows = c.tasks.list(
-            limit=a.limit, status=a.status, offset=a.offset, project=a.project,
-            assignee=a.assignee, search=a.search, sort=a.sort,
-        )
+        # Your own id, so --mine combines with --project/--search/--status
+        # (the SDK's list_mine() takes no project or search filter).
+        assignee = c.whoami().id
+    rows = c.tasks.list(
+        limit=a.limit, status=a.status, offset=a.offset, project=a.project,
+        assignee=assignee, search=a.search, sort=a.sort,
+    )
     return ctx.listing(rows, _task_line, empty="  (no tasks)")
 
 

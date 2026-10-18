@@ -102,10 +102,15 @@ def test_tasks_list_resolves_project_and_assignee_names(api, run):
 
 
 def test_tasks_list_mine(api, run):
+    """--mine combines with the other filters (a first cut used the SDK's
+    list_mine(), which silently dropped --project and --search)."""
+    _projects(api)
     api.add("GET", "/api/me", ok({"user": {"id": U1, "username": "alder"}}))
     api.add("GET", "/api/tasks", ok_list([]))
-    run("tasks", "list", "--mine")
-    assert api.query(api.one("GET", "/api/tasks"))["assigneeId"] == U1
+    run("tasks", "list", "--mine", "--project", "Board", "--search", "ship")
+    q = api.query(api.one("GET", "/api/tasks"))
+    assert (q["assigneeId"], q["projectId"], q["search"]) == (U1, P1, "ship")
+    assert run("tasks", "list", "--mine", "--assignee", "x").rc == 2
 
 
 def test_tasks_show(api, run):
