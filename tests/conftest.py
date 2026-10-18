@@ -11,7 +11,8 @@
 
 3. **Every request is a registered SDK endpoint.** The SDK calls
    ``_on_request(method, url)`` for each request; the hook asserts the
-   (method, path) matches ``meshbook._endpoints.ENDPOINTS``, so a CLI verb
+   (method, path) matches ``meshbook.endpoints.ENDPOINTS`` (public since SDK
+   0.4.1; 0.12.0 imported the private ``_endpoints``), so a CLI verb
    that bypassed the SDK's registry (the raw ``request()`` escape hatch)
    fails here. Every request seen is also recorded: when
    ``MESH_CONTRACT_CALLS`` names a file, the session writes the distinct
@@ -31,7 +32,7 @@ from typing import Any
 
 import meshbook.client as mc
 import pytest
-from meshbook._endpoints import ENDPOINTS
+from meshbook.endpoints import ENDPOINTS
 
 from tests._fake import BASE, MESH, Router, meshes_payload
 

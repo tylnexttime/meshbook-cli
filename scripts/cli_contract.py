@@ -3,7 +3,7 @@
 
 Since 0.12.0 meshbook-cli sends nothing itself: every request goes through a
 meshbook-sdk namespace method, and the SDK sends every request through its
-endpoint registry (``meshbook._endpoints``). So the CLI's contract is two
+endpoint registry (``meshbook.endpoints``). So the CLI's contract is two
 claims, both checked here and in CI:
 
 1. **No direct HTTP in ``mesh/``.** No module imports an HTTP or socket
@@ -14,11 +14,11 @@ claims, both checked here and in CI:
 
 2. **Every SDK call the CLI makes exists in the server's OpenAPI.** That is
    the vendored ``scripts/contract_check.py`` (copied byte-for-byte from
-   meshbook-sdk 0.4.0, ``scripts/contract_check.py``), run twice in CI
+   meshbook-sdk 0.4.1, ``scripts/contract_check.py``, unchanged since 0.4.0), run twice in CI
    against the pinned ``tests/contract/openapi.json`` (copied from the SDK's
    pin; refresh with ``scripts/refresh_openapi.py``):
 
-   * ``--registry meshbook._endpoints``: every call the SDK can make (a
+   * ``--registry meshbook.endpoints``: every call the SDK can make (a
      superset of the CLI's);
    * ``--calls build/contract-calls.json``: exactly the (method, path)
      pairs the CLI test-suite sent, recorded by tests/conftest.py when

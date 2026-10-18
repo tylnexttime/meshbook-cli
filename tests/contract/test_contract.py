@@ -56,7 +56,7 @@ def test_urllib_parse_is_not_http(tmp_path):
 
 def test_every_sdk_call_is_in_the_pinned_spec(capsys):
     """Strict: the SDK's whole registry (a superset of what the CLI calls)."""
-    code = cc.main(["--spec", str(SNAPSHOT), "--registry", "meshbook._endpoints"])
+    code = cc.main(["--spec", str(SNAPSHOT), "--registry", "meshbook.endpoints"])
     out = capsys.readouterr().out
     assert code == 0, out
     assert "missing: 0" in out

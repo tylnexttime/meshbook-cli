@@ -40,7 +40,7 @@ jobs:
         run: python scripts/cli_contract.py
 
       - name: Contract - every meshbook-sdk call exists in the pinned OpenAPI
-        run: python scripts/contract_check.py --spec tests/contract/openapi.json --registry meshbook._endpoints
+        run: python scripts/contract_check.py --spec tests/contract/openapi.json --registry meshbook.endpoints
 
       - name: Test (records every SDK call the suite makes)
         env:
