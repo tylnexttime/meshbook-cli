@@ -124,6 +124,16 @@ HINTS = {
 }
 
 
+def _unknown_route(err: MeshbookError | CliError) -> bool:
+    """FastAPI's own answer for a route it does not have: 405, or a 404 whose
+    body is the framework's bare ``{"detail": "Not Found"}`` (our routes say
+    ``not_found`` in the envelope instead)."""
+    status = getattr(err, "status", 0)
+    if status == 405:
+        return True
+    return status == 404 and err.code == "http_error" and err.message == "Not Found"
+
+
 def exit_code_for(err: MeshbookError | CliError) -> int:
     if isinstance(err, CliError):
         return err.exit_code
@@ -133,6 +143,9 @@ def exit_code_for(err: MeshbookError | CliError) -> int:
 def report_error(err: MeshbookError | CliError, *, as_json: bool) -> int:
     """Print an error to stderr (JSON under --json) and return the exit code."""
     hint = err.hint if isinstance(err, CliError) else HINTS.get(err.code)
+    if hint is None and _unknown_route(err):
+        hint = ("This server does not have that route: it may predate meshbook-cli "
+                f"{VERSION} (event edits and project members need the 2026-10-19 server).")
     if err.code == "missing_dependency":
         # The SDK names its own extra; this tool's users install the CLI's.
         message = f"mesh agent needs the optional `cryptography` package. Install it with:  {AGENT_INSTALL}"

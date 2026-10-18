@@ -259,3 +259,29 @@ def test_ambiguous_display_name_is_refused_not_guessed(api, run):
     assert r.rc == 1
     assert "sam_a" in r.err and "sam_b" in r.err
     assert not [q for q in api.requests if q.get_method() == "POST"]
+
+
+# ─── a server older than the client ─────────────────────────────────
+
+@pytest.mark.parametrize("resp", [
+    {"status": 405, "payload": {"detail": "Method Not Allowed"}},
+    {"status": 404, "payload": {"detail": "Not Found"}},
+])
+def test_unknown_route_says_the_server_may_predate_the_client(api, run, resp):
+    """Prod lacks PATCH /api/calendar-events/{id} and the project-member routes
+    until the 2026-10-19 server is deployed; a bare 405/404 told nobody why."""
+    from tests._fake import E1, Err
+
+    api.add("PATCH", f"/api/calendar-events/{E1}", Err(resp["status"], resp["payload"]))
+    r = run("events", "update", E1, "--title", "x")
+    assert r.rc == 1
+    assert "may predate meshbook-cli" in r.err
+
+
+def test_our_own_not_found_is_not_called_an_unknown_route(api, run):
+    from tests._fake import E1
+
+    api.add("GET", f"/api/calendar-events/{E1}", err(404, "not_found", "Event not found"))
+    r = run("events", "show", E1)
+    assert r.rc == 1 and "Event not found" in r.err
+    assert "predate" not in r.err
