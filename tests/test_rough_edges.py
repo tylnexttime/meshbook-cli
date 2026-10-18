@@ -242,11 +242,23 @@ def test_dm_read_reports_a_403_instead_of_user_not_found(api, run):
 
 def test_channel_by_uuid_reports_a_403_instead_of_no_match(api, run):
     """0.11's _resolve_channel turned any error on GET /api/channels/<uuid> into
-    "No channel matching ..."."""
-    api.add("GET", f"/api/channels/{CH1}", err(403, "forbidden", "Private channel"))
+    "No channel matching ...".
+
+    Since meshbook-sdk 0.4.1 a UUID is used as given, with no lookup GET, so the
+    403 now comes from the messages call itself. It must still be reported as
+    the server's 403, never as "no match". (0.12.0's version of this test
+    routed the lookup GET, which 0.4.1 no longer sends.)"""
+    api.add("GET", f"/api/channels/{CH1}/messages", err(403, "forbidden", "Private channel"))
     r = run("channels", "read", CH1)
     assert r.rc == 1
     assert "Private channel" in r.err
+    assert "no channel" not in r.err.lower() and "not found" not in r.err.lower()
+    assert not api.calls("GET", f"/api/channels/{CH1}")      # no lookup GET
+    api.one("GET", f"/api/channels/{CH1}/messages")
+    j = run("--json", "channels", "read", CH1)
+    assert j.rc == 1
+    e = j.err_json()["error"]
+    assert (e["code"], e["status"]) == ("forbidden", 403)
 
 
 def test_ambiguous_display_name_is_refused_not_guessed(api, run):
