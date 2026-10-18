@@ -29,10 +29,14 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 requires-python = ">=3.10"
-# Zero external runtime deps — Python stdlib only. This is deliberate:
-# a 3B local model on a Pi can `pip install meshbook-cli` and have a
-# working CRM client in <1 MB. Don't add deps without a strong reason.
-dependencies = []
+# One runtime dependency, and it is ours: meshbook-sdk is the single Python
+# core (config, HTTP, errors, the agent lane, name resolution) since 0.12.0.
+# The SDK is itself stdlib-only, so the "3B model on a Pi installs a working
+# CRM client in <1 MB" promise still holds. Pinned to the 0.4 minor: the CLI
+# reaches into nothing private, but a minor bump is where the SDK may move.
+dependencies = [
+    "meshbook-sdk>=0.4,<0.5",
+]
 
 [project.urls]
 Homepage = "https://meshbook.org"
@@ -45,10 +49,18 @@ Issues = "https://github.com/tylnexttime/meshbook-cli/issues"
 mesh = "mesh.cli:main"
 
 [project.optional-dependencies]
+# `mesh agent ...` (the non-human key lane) needs RSA signing, which the SDK
+# keeps optional. `pip install "meshbook-cli[agent]"` pulls it in.
+agent = [
+    "meshbook-sdk[agent]>=0.4,<0.5",
+]
+# Linters pinned to a MINOR range, like the SDK: an unpinned ruff release can
+# turn CI red with no code change (SURVEY 2026-10-19 §3). Bump deliberately.
 dev = [
+    "meshbook-sdk[agent]>=0.4,<0.5",
     "pytest>=8.0",
     "pytest-cov>=5.0",
-    "ruff>=0.6",
+    "ruff>=0.17,<0.18",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -58,6 +70,7 @@ packages = ["mesh"]
 include = [
     "/mesh",
     "/tests",
+    "/scripts",
     "/docs",
     "/README.md",
     "/LICENSE",
