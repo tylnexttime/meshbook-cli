@@ -107,8 +107,9 @@ def zone_label(tz: _dt.tzinfo | None, when: _dt.datetime | None = None) -> str:
 def iana_name(tz_arg: str | None) -> str | None:
     """The IANA name to send as the server's ``tz`` (the wall clock recurrences
     repeat in): ``--tz``, else ``$TZ`` when it is an Area/City name, else the
-    ``/etc/localtime`` link target on POSIX. None when unknowable (Windows
-    without --tz): the server then expands on UTC, and the CLI says so."""
+    ``/etc/localtime`` link target on POSIX, else (0.12.1) the Windows zone
+    mapped to IANA via ``_winzones``. None when unknowable (an unmapped Windows
+    zone without --tz): the server then expands on UTC, and the CLI says so."""
     if tz_arg:
         return tz_arg
     env = (os.environ.get("TZ") or "").strip().lstrip(":")
@@ -122,7 +123,9 @@ def iana_name(tz_arg: str | None) -> str | None:
                 return target.split("zoneinfo/", 1)[1]
     except OSError:
         pass
-    return None
+    from mesh._winzones import windows_iana
+
+    return windows_iana()
 
 
 def show(value: Any, tz: _dt.tzinfo | None, fmt: str = "%a %Y-%m-%d %H:%M") -> str:
