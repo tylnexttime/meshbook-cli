@@ -165,6 +165,11 @@ _SOURCE_LABEL = {
 }
 
 
+def source_label(source: str | None) -> str:
+    """Where the mesh came from, in the words a user typed: --mesh, MESHBOOK_MESH, config."""
+    return _SOURCE_LABEL.get(source or "", source or "?")
+
+
 class Ctx:
     """What a verb gets: parsed args, ``--json``, and a lazily built SDK client.
 
@@ -218,7 +223,7 @@ class Ctx:
             return None
         if not mid:
             return None
-        source = _SOURCE_LABEL.get(c.mesh_source or "", c.mesh_source or "?")
+        source = source_label(c.mesh_source)
         name = ""
         try:
             name = c.meshes.resolve(mid).name
@@ -368,6 +373,7 @@ __all__ = [
     "need_uuid",
     "new_client",
     "report_error",
+    "source_label",
     "split_tags",
     "ts",
 ]

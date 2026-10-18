@@ -11,7 +11,7 @@ from meshbook import VERSION as SDK_VERSION
 from meshbook import ItemList, MeshbookError
 from meshbook import config as mbconfig
 
-from ._core import AGENT_INSTALL, CliError, Ctx, clip, new_client, ts
+from ._core import AGENT_INSTALL, CliError, Ctx, clip, new_client, source_label, ts
 from ._version import VERSION
 
 # ─── login / logout / whoami / doctor ───────────────────────────────────
@@ -111,14 +111,14 @@ def _mesh_in_effect(ctx: Ctx) -> tuple[str | None, str | None, str | None]:
     try:
         mid = c.active_mesh_id
     except MeshbookError:
-        return None, None, c.mesh_source
+        return None, None, source_label(c.mesh_source)
     if not mid:
         return None, None, None
     try:
         name = c.meshes.resolve(mid).name
     except MeshbookError:
         name = None
-    return mid, name, c.mesh_source
+    return mid, name, source_label(c.mesh_source)
 
 
 def cmd_whoami(ctx: Ctx) -> int:
