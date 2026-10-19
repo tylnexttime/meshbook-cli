@@ -342,3 +342,76 @@ def test_attendee_only_update_still_names_the_zone(api, run):
     assert r.rc == 0, r.err
     when = next(ln for ln in r.out.splitlines() if "when:" in ln)
     assert "10:00-11:00" in when and "(times in Australia/Sydney, UTC+11:00)" in when
+
+
+# ─── #3: tasks create --assignee ────────────────────────────────────────
+
+from tests._fake import P1, T1  # noqa: E402
+
+ALDER = {"id": U1, "username": "alder", "displayName": "Alder"}
+
+
+def _task(**over):
+    # The deployed (pre-round-3) server's create answer: the scalar assignee IS
+    # stored, but `assignees` / `assigneeCount` read only lead + task_assignees.
+    t = {"id": T1, "title": "Probe", "status": "NotStarted", "projectId": P1,
+         "assigneeUserId": U1, "assignees": [], "assigneeCount": 0}
+    t.update(over)
+    return t
+
+
+def _task_routes(api, created):
+    api.add("GET", "/api/users", ok_list([ALDER]))
+    api.add("GET", "/api/projects", ok_list([{"id": P1, "name": "Ops", "code": "OPS"}]))
+    api.add("POST", "/api/tasks", ok(created))
+
+
+def test_create_assignee_is_sent_and_shown(api, run):
+    """Alder #3: the CLI sent assigneeUserId and the server stored it, but the
+    human output never said so, and the JSON's `assignees` read []."""
+    _task_routes(api, _task())
+    r = run("tasks", "create", "--project", P1, "--title", "Probe", "--assignee", "@alder")
+    assert r.rc == 0, r.err
+    assert api.body(api.one("POST", "/api/tasks"))["assigneeUserId"] == U1
+    assert "assignee: Alder (@alder)" in r.out
+
+
+def test_create_refuses_loudly_when_the_assignee_was_not_stored(api, run):
+    _task_routes(api, _task(assigneeUserId=None))
+    r = run("tasks", "create", "--project", P1, "--title", "Probe", "--assignee", "@alder")
+    assert r.rc == 1
+    assert "did not store the assignee" in r.err and T1 in r.err
+    e = run("--json", "tasks", "create", "--project", P1, "--title", "Probe",
+            "--assignee", "@alder").err_json()["error"]
+    assert e["code"] == "assignee_not_stored"
+
+
+def test_create_refuses_when_someone_else_was_stored(api, run):
+    _task_routes(api, _task(assigneeUserId=U2))
+    r = run("tasks", "create", "--project", P1, "--title", "Probe", "--assignee", "@alder")
+    assert r.rc == 1 and "did not store the assignee" in r.err
+
+
+def test_update_assignee_is_checked_too(api, run):
+    api.add("GET", "/api/users", ok_list([ALDER]))
+    api.add("PATCH", f"/api/tasks/{T1}", ok(_task(assigneeUserId=None)))
+    r = run("tasks", "update", T1, "--assignee", "alder")
+    assert r.rc == 1 and "did not store the assignee" in r.err
+
+
+def test_update_assignee_success_says_who(api, run):
+    api.add("GET", "/api/users", ok_list([ALDER]))
+    api.add("PATCH", f"/api/tasks/{T1}", ok(_task()))
+    r = run("tasks", "update", T1, "--assignee", "alder")
+    assert r.rc == 0, r.err
+    assert "assignee: Alder (@alder)" in r.out
+
+
+def test_show_names_the_scalar_assignee_beside_the_lead(api, run):
+    """Squashed with #3: `tasks show` printed `assignees` (the lead, on the
+    deployed server) and hid the scalar assignee whenever that list was non-empty."""
+    api.add("GET", f"/api/tasks/{T1}", ok(_task(assignees=[{"userId": U2, "displayName": "Lead"}])))
+    r = run("tasks", "show", T1)
+    assert r.rc == 0, r.err
+    line = next(ln for ln in r.out.splitlines() if "assignee" in ln)
+    assert "Lead" in line and U1 in line

@@ -25,7 +25,8 @@ def test_tasks_create_with_due_assignee_tags_parent(api, run):
     _users(api)
     _projects(api)
     parent = "bbbbbbbb-0000-0000-0000-000000000099"
-    api.add("POST", "/api/tasks", ok({"id": T1, "title": "Ship", "dueDate": "2026-10-24"}))
+    api.add("POST", "/api/tasks", ok({"id": T1, "title": "Ship", "dueDate": "2026-10-24",
+                                      "assigneeUserId": U1}))   # the server echoes it
     api.add("POST", TAG_ROUTE, ok({}))
     api.add("GET", TAG_ROUTE, ok_list([{"id": "tg1", "name": "release"}, {"id": "tg2", "name": "cli"}]))
     r = run("tasks", "create", "--project", "Board", "--title", "Ship", "--priority", "High",
@@ -50,7 +51,7 @@ def test_tasks_create_due_time_is_local_and_aware(api, run):
 
 def test_tasks_update_edits_in_place(api, run):
     _users(api)
-    api.add("PATCH", f"/api/tasks/{T1}", ok({"id": T1, "title": "Renamed"}))
+    api.add("PATCH", f"/api/tasks/{T1}", ok({"id": T1, "title": "Renamed", "assigneeUserId": U1}))
     r = run("tasks", "update", T1, "--title", "Renamed", "--priority", "Urgent", "--status",
             "InProgress", "--due", "2026-11-01", "--assignee", "Alder", "--description", "")
     assert r.rc == 0, r.err

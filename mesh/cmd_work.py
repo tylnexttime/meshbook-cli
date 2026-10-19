@@ -68,13 +68,15 @@ def cmd_tasks_show(ctx: Ctx) -> int:
     print(f"  due:       {_due_text(t) or '-'}")
     if t.get("projectName") or t.get("projectId"):
         print(f"  project:   {t.get('projectName') or t.get('projectId')}")
-    assignees = t.get("assignees") or []
-    names = [str(x.get("displayName") or x.get("username") or x.get("userId")) for x in assignees
-             if isinstance(x, dict)]
+    assignees = [x for x in (t.get("assignees") or []) if isinstance(x, dict)]
+    names = [str(x.get("displayName") or x.get("username") or x.get("userId")) for x in assignees]
+    scalar = t.get("assigneeUserId")
+    if scalar and str(scalar) not in {str(x.get("userId")) for x in assignees}:
+        # A server before 2026-10-19 left the API's scalar assignee out of
+        # `assignees` (Alder #3); never hide it behind the lead.
+        names.append(str(scalar))
     if names:
         print(f"  assignees: {', '.join(names)}")
-    elif t.get("assigneeUserId"):
-        print(f"  assignee:  {t.get('assigneeUserId')}")
     if t.get("parentTaskId"):
         print(f"  parent:    {t.get('parentTaskId')}")
     if t.get("description"):
@@ -82,16 +84,53 @@ def cmd_tasks_show(ctx: Ctx) -> int:
     return 0
 
 
+def _resolve_assignee(ctx: Ctx, ref: str) -> dict[str, Any]:
+    """``--assignee`` → the member row, resolved BEFORE the write so the
+    answer can be checked against it (and named) afterwards."""
+    return ctx.client.users.resolve(ref)
+
+
+def _who(user: dict[str, Any]) -> str:
+    name = user.get("displayName") or user.get("display_name")
+    handle = f"@{user['username']}" if user.get("username") else None
+    if name and handle:
+        return f"{name} ({handle})"
+    return str(name or handle or user.get("id"))
+
+
+def _check_assignee(data: dict[str, Any], user: dict[str, Any], verb: str) -> str:
+    """Alder #3: `tasks create --assignee @alder` exited 0 with
+    ``"assignees": []``. The CLI sends ``assigneeUserId`` and the server
+    stores it; the empty list is the server's (it read only lead +
+    task_assignees until 2026-10-19). So the stored scalar is the truth to
+    check: missing or different is a loud error, never a silent exit 0."""
+    stored = data.get("assigneeUserId")
+    if not stored or str(stored) != str(user.get("id")):
+        got = f"it holds {stored}" if stored else "it holds no assignee"
+        raise CliError(
+            "assignee_not_stored",
+            f"The server {verb} task {data.get('id')} but did not store the assignee "
+            f"{_who(user)}: {got}.",
+            exit_code=1,
+            hint=f"Check with:  mesh tasks show {data.get('id')}   and retry:  "
+                 f"mesh tasks update {data.get('id')} --assignee {user.get('id')}",
+        )
+    return f"  assignee: {_who(user)}"
+
+
 def cmd_tasks_create(ctx: Ctx) -> int:
     a = ctx.args
     tz = _when.zone(a.tz)
     due, note = _due_value(a.due, tz) if a.due else (None, None)
+    user = _resolve_assignee(ctx, a.assignee) if a.assignee else None
     data = ctx.client.tasks.create(
         None, a.title, a.priority, a.description,
-        project=a.project, due=due, assignee=a.assignee, tags=split_tags(a.tags),
-        parent=a.parent, status=a.status,
+        project=a.project, due=due, assignee=str(user["id"]) if user else None,
+        tags=split_tags(a.tags), parent=a.parent, status=a.status,
     )
     lines = [f"Created task: {data.get('title')} ({data.get('id')})"]
+    if user:
+        lines.append(_check_assignee(data, user, "created"))
     if a.due:
         lines.append(f"  due: {_due_text(data) or a.due}" + (f"  (times in {note})" if note else ""))
     ctx.wrote(*lines, data=data)
@@ -114,8 +153,10 @@ def cmd_tasks_update(ctx: Ctx) -> int:
     elif a.no_due:
         due = None
     assignee: Any = UNSET
+    user = None
     if a.assignee:
-        assignee = a.assignee
+        user = _resolve_assignee(ctx, a.assignee)
+        assignee = str(user["id"])
     elif a.unassign:
         assignee = None
     data = ctx.client.tasks.update(
@@ -130,6 +171,8 @@ def cmd_tasks_update(ctx: Ctx) -> int:
         tags=split_tags(a.tags),
     )
     lines = [f"Updated task: {data.get('title')} ({a.task_id})"]
+    if user:
+        lines.append(_check_assignee(data, user, "updated"))
     if note:
         lines.append(f"  due: {_due_text(data)}  (times in {note})")
     ctx.wrote(*lines, data=data)
