@@ -342,11 +342,18 @@ class Ctx:
         extra: Mapping[str, Any] | None = None,
         paging: str = "offset",
         cursor: str | None = None,
+        limit: int | None = None,
     ) -> int:
         """Print a list result: one JSON envelope, or rows plus "N of TOTAL".
 
-        JSON shape (every listing, §102.8 "one envelope"):
-        ``{"items", "count", "total", "limit", "offset", "hasMore", ...extra}``.
+        JSON shape (every listing, §102.8 "one envelope"; 0.12.2 made it hold
+        for members list too, Alder #4):
+        ``{"items", "count", "total", "limit", "offset", "hasMore", "paging",
+        ...extra}``, plus ``nextBefore`` when ``paging`` is ``"before"``.
+        ``offset`` is null unless ``paging`` is ``"offset"`` (the other routes
+        have no offset); ``limit`` is the page size asked for (*limit* fills
+        it when the SDK result carries none), null when none was; ``total``
+        is null when the server reports none.
 
         *paging* says how the next page is reached, so the footer never offers
         a flag the verb does not have: ``"offset"`` (``--offset N``),
@@ -357,11 +364,14 @@ class Ctx:
         """
         items = list(rows)
         total = getattr(rows, "total", None)
-        limit = getattr(rows, "limit", None)
-        offset = getattr(rows, "offset", None)
+        rows_limit = getattr(rows, "limit", None)
+        limit = rows_limit if rows_limit is not None else limit
+        offset = getattr(rows, "offset", None) if paging == "offset" else None
         shown_total, more = _paging(rows, len(items), total, limit, offset)
         if paging == "before" and not cursor:
             more = False          # no time to page from: nothing to offer
+        if paging == "none":
+            more = False          # the whole set, in one answer
         if self.json:
             out: dict[str, Any] = {
                 "items": items,
@@ -370,6 +380,7 @@ class Ctx:
                 "limit": limit,
                 "offset": offset,
                 "hasMore": more,
+                "paging": paging,
             }
             if paging == "before":
                 out["nextBefore"] = cursor if more else None

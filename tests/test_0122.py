@@ -415,3 +415,53 @@ def test_show_names_the_scalar_assignee_beside_the_lead(api, run):
     assert r.rc == 0, r.err
     line = next(ln for ln in r.out.splitlines() if "assignee" in ln)
     assert "Lead" in line and U1 in line
+
+
+# ─── #4: one --json listing envelope everywhere ─────────────────────────
+
+ENVELOPE = ("items", "count", "total", "limit", "offset", "hasMore", "paging")
+
+
+def _detail(api, members):
+    api.add("GET", f"/api/meshes/{MESH}/detail", ok({
+        "mesh": {"name": "Test Mesh"}, "members": members,
+        "pendingInvites": [], "pendingRequests": []}))
+
+
+def test_members_list_json_is_the_listing_envelope(api, run):
+    """Alder #4: `members list` gave {mesh, meshId, count, members}: no items,
+    so anything written against `.items[]` tripped on it."""
+    wren = {"username": "wren", "displayName": "Wren", "role": "member"}
+    _detail(api, [wren])
+    j = run("--json", "members", "list").json()
+    for key in ENVELOPE:
+        assert key in j, key
+    assert j["items"] == [wren] and j["count"] == j["total"] == 1
+    assert j["hasMore"] is False and j["limit"] is None and j["offset"] is None
+    assert j["paging"] == "none"
+    assert j["mesh"] == "Test Mesh" and j["meshId"] == MESH
+    assert j["members"] == [wren]            # the 0.12.1 key, kept for one minor
+
+
+def test_chat_list_reports_limit_and_a_null_offset(api, run):
+    """Chat pages by time: offset is null (not applicable), limit is the one asked for."""
+    api.add("GET", f"/api/entities/mesh/{MESH}/chat",
+            ok({"items": [{"id": "m1", "createdAt": "2026-10-19T01:00:00+00:00"}]}))
+    j = run("--json", "chat", "list", "--limit", "5").json()
+    assert j["limit"] == 5 and j["offset"] is None and j["paging"] == "before"
+    for key in ENVELOPE + ("nextBefore",):
+        assert key in j, key
+
+
+def test_chat_search_reports_limit_and_a_null_offset(api, run):
+    api.add("GET", "/api/chat/search", ok({"items": [], "semantic": True}))
+    j = run("--json", "chat", "search", "q", "--limit", "7").json()
+    assert j["limit"] == 7 and j["offset"] is None and j["paging"] == "limit"
+
+
+def test_offset_listings_say_paging_offset(api, run):
+    api.add("GET", "/api/tasks", ok_list([]))
+    j = run("--json", "tasks", "list").json()
+    assert j["paging"] == "offset"
+    for key in ENVELOPE:
+        assert key in j, key

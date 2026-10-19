@@ -308,10 +308,16 @@ def cmd_members_list(ctx: Ctx) -> int:
     """Who is actually in a mesh (Wren, report A6: a seat could change a roster
     it could not read). Reads /api/meshes/<id>/detail through the SDK."""
     data = ctx.client.meshes.members()
-    if ctx.json:
-        ctx.emit(data)
-        return 0
     members = data.get("members") or []
+    if ctx.json:
+        # The one listing envelope (Alder #4: 0.12.1 had no `items` here). The
+        # detail route returns the whole roster: paging "none". `members` is
+        # 0.12.1's key, kept as an alias until 0.13.
+        rows = ItemList(members, total=len(members))
+        extra = {"mesh": data.get("mesh"), "meshId": data.get("meshId"), "members": members,
+                 "pendingInvites": data.get("pendingInvites") or [],
+                 "pendingRequests": data.get("pendingRequests") or []}
+        return ctx.listing(rows, str, paging="none", extra=extra)
     pending = data.get("pendingInvites") or []
     requests = data.get("pendingRequests") or []
     # Say the number out loud: a count reads as an answer that happens to be zero.

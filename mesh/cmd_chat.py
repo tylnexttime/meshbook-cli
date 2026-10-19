@@ -72,6 +72,7 @@ def cmd_chat_list(ctx: Ctx) -> int:
         empty="  (no messages)",
         paging="before",
         cursor=oldest_time(rows),
+        limit=a.limit,
     )
 
 
@@ -99,7 +100,8 @@ def cmd_chat_search(ctx: Ctx) -> int:
     if not ctx.json and not semantic and len(res):
         print("note: semantic arm off - keyword-only results", file=sys.stderr)
     empty = "  No matches." if semantic else "  No matches (semantic arm was off: keyword-only)."
-    return ctx.listing(res, row, empty=empty, extra={"semantic": semantic}, paging="limit")
+    return ctx.listing(res, row, empty=empty, extra={"semantic": semantic}, paging="limit",
+                       limit=a.limit)
 
 
 def cmd_chat_attach(ctx: Ctx) -> int:
@@ -180,7 +182,7 @@ def cmd_channels_read(ctx: Ctx) -> int:
     rows = ctx.client.channels.read(a.channel, a.limit, before=_before(a))
     header = None if ctx.json else f"  {_chan(a.channel)} - newest {len(rows)} message(s), oldest first"
     return ctx.listing(_oldest_first(rows), _message_line, header=header, empty="  (no messages)",
-                       paging="before", cursor=oldest_time(rows))
+                       paging="before", cursor=oldest_time(rows), limit=a.limit)
 
 
 def cmd_channels_post(ctx: Ctx) -> int:
@@ -261,7 +263,7 @@ def cmd_dm_read(ctx: Ctx) -> int:
     label = user.get("displayName") or user.get("username") or a.user
     header = None if ctx.json else f"  DM with {label}"
     return ctx.listing(_oldest_first(rows), _message_line, header=header, empty="  (no messages)",
-                       paging="before", cursor=oldest_time(rows))
+                       paging="before", cursor=oldest_time(rows), limit=a.limit)
 
 
 def cmd_dm_send(ctx: Ctx) -> int:
