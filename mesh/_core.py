@@ -104,6 +104,8 @@ EXIT_CODES = {
     "no_agent_key": 2,
     "key_exists": 2,
     "missing_dependency": 3,
+    # SDK 0.4.2: `mesh agent recover` with no pending key (nothing sent).
+    "no_pending_key": 2,
     # SDK 0.4.1: local refusals, nothing written (or, for a config, nothing sent).
     "config_unreadable": 2,
     "insecure_base": 2,
@@ -235,8 +237,9 @@ HINT_TEXT = {
         "--repair-config  (the broken file is kept as config.bad.<time>)"
     ),
     "resolve_pending_key": (
-        "Try it with:  mesh agent token  (a pending key the server accepts is kept). "
-        "If the enroll never reached the server, delete the .pending files beside the key."
+        "Try it with:  mesh agent recover  (promotes it if the server accepts it; "
+        "mesh agent token tries it too). If the enroll never reached the server:  "
+        "mesh agent discard --yes"
     ),
     "fix_base_url": (
         "Check --base / MESHBOOK_BASE / the config's base: it must be https:// on the "

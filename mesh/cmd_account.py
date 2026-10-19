@@ -522,6 +522,66 @@ def cmd_agent_whoami(ctx: Ctx) -> int:
     return 0
 
 
+def cmd_agent_recover(ctx: Ctx) -> int:
+    """Try the key an interrupted enroll/register left pending (SDK 0.4.2
+    recover_pending): if the token endpoint accepts it, the server did switch,
+    so it becomes the live key (the old one kept as .bak)."""
+    need_crypto()
+    c = ctx.client
+    bundle = None
+    if ctx.args.bundle:
+        import json as _json
+        from pathlib import Path
+
+        path = Path(ctx.args.bundle)
+        try:
+            bundle = _json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            raise CliError("file_not_found", f"No such file: {path}") from None
+        except (OSError, ValueError) as e:
+            raise CliError("bad_argument", f"--bundle {path} is not a JSON bundle: {e}") from None
+        if not isinstance(bundle, dict):
+            raise CliError("bad_argument", f"--bundle {path} must hold a JSON object.")
+    pending = c.agent.pending_key_path
+    if not c.agent.recover_pending(bundle):
+        raise CliError(
+            "pending_key_refused",
+            f"The token endpoint refused the pending key at {pending}: the server never "
+            "switched to it, so your current key (if any) is still the live one.",
+            exit_code=1,
+            hint="Delete the pending key with:  mesh agent discard --yes",
+        )
+    if ctx.json:
+        ctx.emit({"recovered": True, "keyPath": str(c.agent.key_path),
+                  "kid": c.agent.local_meta().get("kid")})
+        return 0
+    print(f"Recovered: the server accepts the pending key; it is now the live key "
+          f"({c.agent.key_path}, the old one kept as .bak).")
+    print(f"  kid: {c.agent.local_meta().get('kid')}")
+    return 0
+
+
+def cmd_agent_discard(ctx: Ctx) -> int:
+    """Delete an unconfirmed pending key (SDK 0.4.2 discard_pending). Needs
+    --yes: if the server DID switch to it, deleting it loses this seat's key."""
+    c = ctx.client
+    pending = c.agent.pending_key_path
+    if not ctx.args.yes:
+        raise CliError(
+            "bad_argument",
+            f"This deletes the pending key {pending} and its bundle. If the server did switch "
+            "to it, this seat loses its key.",
+            hint="Try first:  mesh agent recover   then, if it is refused:  "
+                 "mesh agent discard --yes",
+        )
+    removed = c.agent.discard_pending()
+    if ctx.json:
+        ctx.emit({"discarded": removed, "path": str(pending)})
+        return 0
+    print(f"Deleted the pending key {pending}." if removed else f"No pending key at {pending}.")
+    return 0
+
+
 def cmd_agent_status(ctx: Ctx) -> int:
     c = ctx.client
     data = c.agent.status()
@@ -654,6 +714,16 @@ def register(sub: Any, add: Any) -> None:
     s.set_defaults(func=cmd_agent_whoami)
     s = add(aps, "status", help="is a key enrolled server-side, and is it this machine's?")
     s.set_defaults(func=cmd_agent_status)
+    s = add(aps, "recover", help="try the key an interrupted enroll/register left pending; "
+                                 "promote it if the server accepts it")
+    s.add_argument("--bundle", metavar="FILE",
+                   help="a mint bundle (agent-key.json) for a first-ever register, which has "
+                        "no local bundle to copy the endpoints from")
+    s.set_defaults(func=cmd_agent_recover)
+    s = add(aps, "discard", help="delete an unconfirmed pending key (needs --yes)")
+    s.add_argument("--yes", action="store_true",
+                   help="yes, delete it: the enroll never reached the server (try recover first)")
+    s.set_defaults(func=cmd_agent_discard)
     s = add(aps, "revoke", help="revoke the enrolled key server-side")
     s.add_argument("--purge-local", action="store_true", help="also delete the local key files")
     s.set_defaults(func=cmd_agent_revoke)

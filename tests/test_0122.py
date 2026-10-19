@@ -571,3 +571,76 @@ def test_no_suggestion_when_nothing_is_close(api, run):
     assert r.rc == 1
     assert "did you mean" not in r.err.lower()
     assert "mesh members list" in r.err
+
+
+# ─── SDK 0.4.2: `mesh agent recover` / `mesh agent discard` ─────────────
+
+
+def _plant_pending(d: Path) -> tuple[Path, Path]:
+    key, meta = d / "agent-key.pem.pending", d / "agent-key.json.pending"
+    key.write_text("-----BEGIN PRIVATE KEY-----\nnot a real key\n", encoding="utf-8")
+    meta.write_text("{}", encoding="utf-8")
+    return key, meta
+
+
+def test_agent_recover_promotes_an_accepted_pending_key(api, run, monkeypatch, _isolated_env):
+    """0.12.1 left open 4: the advice pointed at `mesh agent token` or deleting
+    files by hand. Now one verb asks the token endpoint and promotes."""
+    import meshbook.agent as mba
+
+    _plant_pending(_isolated_env)
+    monkeypatch.setattr(mba._Agent, "recover_pending", lambda self, bundle=None: True)
+    r = run("agent", "recover")
+    assert r.rc == 0, r.err
+    assert "live key" in r.out
+    assert run("--json", "agent", "recover").json()["recovered"] is True
+
+
+def test_agent_recover_refused_says_discard(api, run, monkeypatch, _isolated_env):
+    import meshbook.agent as mba
+
+    _plant_pending(_isolated_env)
+    monkeypatch.setattr(mba._Agent, "recover_pending", lambda self, bundle=None: False)
+    r = run("agent", "recover")
+    assert r.rc == 1
+    assert "mesh agent discard --yes" in r.err
+
+
+def test_agent_recover_with_nothing_pending_is_a_local_refusal(api, run):
+    r = run("--json", "agent", "recover")
+    assert r.rc == 2
+    assert r.err_json()["error"]["code"] == "no_pending_key"
+
+
+def test_agent_recover_passes_a_bundle_file(api, run, monkeypatch, _isolated_env, tmp_path):
+    import meshbook.agent as mba
+
+    _plant_pending(_isolated_env)
+    seen = {}
+    monkeypatch.setattr(mba._Agent, "recover_pending",
+                        lambda self, bundle=None: seen.setdefault("b", bundle) is not None)
+    f = tmp_path / "bundle.json"
+    f.write_text(json.dumps({"tokenEndpoint": "https://mesh.test/t", "clientId": "c"}), encoding="utf-8")
+    assert run("agent", "recover", "--bundle", str(f)).rc == 0
+    assert seen["b"]["clientId"] == "c"
+
+
+def test_agent_discard_needs_yes(api, run, _isolated_env):
+    key, meta = _plant_pending(_isolated_env)
+    r = run("agent", "discard")
+    assert r.rc == 2
+    assert "--yes" in r.err and "mesh agent recover" in r.err
+    assert key.exists() and meta.exists()
+    r = run("agent", "discard", "--yes")
+    assert r.rc == 0, r.err
+    assert not key.exists() and not meta.exists()
+    j = run("--json", "agent", "discard", "--yes").json()
+    assert j["discarded"] is False
+
+
+def test_pending_key_advice_names_the_new_verbs(capsys):
+    from mesh._core import report_error
+
+    report_error(MeshbookError("pending_key", "x", hint="resolve_pending_key"), as_json=False)
+    err = capsys.readouterr().err
+    assert "mesh agent recover" in err and "mesh agent discard" in err
