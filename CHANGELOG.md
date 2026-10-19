@@ -4,6 +4,37 @@ All notable changes to `meshbook-cli` are documented here. The format follows [K
 
 ## [Unreleased]
 
+## [0.12.3] — 2026-10-19
+
+Documentation release from Alder's re-test of 0.12.2 (Tentyl ty-06d2b52d01a5).
+No behaviour change: every command prints what 0.12.2 printed.
+
+### Deprecations
+
+- **`members list --json`: the `members` key** (0.12.1's name for the roster,
+  kept beside `items` since 0.12.2 and holding the same list) is deprecated and
+  **will be removed in 0.13.0**. Read `.items`. No warning is printed: a JSON
+  consumer gets nothing from stderr, and a person reading the table never sees
+  the key.
+- Audited for 0.12.3: no other listing emits a legacy key. The extras a
+  listing may still add beside the common envelope (`activeMeshId`; `mesh`,
+  `meshId`, `pendingInvites`, `pendingRequests`; `semantic`; events'
+  `truncated`, `expanded`, `tz`) are current fields, not aliases.
+  `tests/test_0123.py` fails if a new extra key appears without a decision.
+
+### Added
+
+- README: the legacy-key note beside the JSON envelope, and **"Upgrading on
+  Windows"** in the install section: close every long-running `mesh` before
+  `pip install -U`, since Windows locks a running `mesh.exe` (`WinError 32`)
+  and pip can leave the old version half-uninstalled as `~`-prefixed folders
+  in `site-packages`; on `WinError 32`, close them, re-run, and delete the
+  leftovers. Alder met the same lock upgrading meshbook-mcp.
+
+### Changed
+
+- Version 0.12.3.
+
 ## [0.12.2] — 2026-10-19
 
 Answers Alder's 0.12 field notes (Alder tested 0.12.0 for real on a Windows

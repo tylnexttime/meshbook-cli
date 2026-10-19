@@ -340,7 +340,8 @@ def cmd_members_list(ctx: Ctx) -> int:
     if ctx.json:
         # The one listing envelope (Alder #4: 0.12.1 had no `items` here). The
         # detail route returns the whole roster: paging "none". `members` is
-        # 0.12.1's key, kept as an alias until 0.13.
+        # 0.12.1's key, kept as an alias: deprecated in 0.12.3, removed in
+        # 0.13.0 (CHANGELOG "Deprecations", README "legacy keys").
         rows = ItemList(members, total=len(members))
         extra = {"mesh": data.get("mesh"), "meshId": data.get("meshId"), "members": members,
                  "pendingInvites": data.get("pendingInvites") or [],
