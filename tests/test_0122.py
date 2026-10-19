@@ -644,3 +644,38 @@ def test_pending_key_advice_names_the_new_verbs(capsys):
     report_error(MeshbookError("pending_key", "x", hint="resolve_pending_key"), as_json=False)
     err = capsys.readouterr().err
     assert "mesh agent recover" in err and "mesh agent discard" in err
+
+
+# ─── squashed on the way ────────────────────────────────────────────────
+
+
+def test_an_exact_total_on_a_full_last_page_is_trusted(api, run):
+    """The 2026-10-19 server sends limit+offset with a TRUE total (SDK 0.4.2:
+    ItemList.total_exact). 0.12.1 still treated a full page whose total equals
+    its length as the old page-length ambiguity: it hid the total and offered
+    "more: --offset 2" for a page that is provably the last."""
+    rows = [{"id": "t1", "title": "a"}, {"id": "t2", "title": "b"}]
+    api.add("GET", "/api/tasks", ok({"items": rows, "total": 2, "limit": 2, "offset": 0}))
+    r = run("tasks", "list", "--limit", "2")
+    assert r.rc == 0, r.err
+    assert "2 of 2" in r.out and "more:" not in r.out
+    j = run("--json", "tasks", "list", "--limit", "2").json()
+    assert j["hasMore"] is False and j["total"] == 2
+
+
+def test_an_inexact_total_on_a_full_page_still_assumes_more(api, run):
+    rows = [{"id": "t1", "title": "a"}, {"id": "t2", "title": "b"}]
+    api.add("GET", "/api/tasks", ok({"items": rows, "total": 2}))      # an older server
+    j = run("--json", "tasks", "list", "--limit", "2").json()
+    assert j["hasMore"] is True
+
+
+def test_a_notification_without_a_summary_has_no_dangling_dash(api, run):
+    """Alder #9: "MeshInvitationReceived - " with nothing after the dash."""
+    api.add("GET", "/api/notifications", ok_list([
+        {"id": "n1", "kind": "MeshInvitationReceived", "summary": "",
+         "createdAt": "2026-08-30T01:00:00+00:00"}]))
+    r = run("notifications")
+    assert r.rc == 0, r.err
+    line = next(ln for ln in r.out.splitlines() if "MeshInvitationReceived" in ln)
+    assert line.rstrip().endswith("MeshInvitationReceived")

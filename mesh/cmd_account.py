@@ -440,7 +440,10 @@ def cmd_notifications(ctx: Ctx) -> int:
     def row(n: dict[str, Any]) -> str:
         marker = "*" if not n.get("readAt") else " "
         # 0.11: n.get('summary', '')[:120] raised TypeError on a null summary.
-        return f"  {marker} [{ts(n.get('createdAt'))}] {n.get('kind')} - {clip(n.get('summary'), 120)}"
+        # Alder #9: an empty summary left "MeshInvitationReceived - " dangling.
+        summary = clip(n.get("summary"), 120).strip()
+        return (f"  {marker} [{ts(n.get('createdAt'))}] {n.get('kind')}"
+                + (f" - {summary}" if summary else ""))
 
     return ctx.listing(rows, row, header=header, empty="  (no notifications)")
 

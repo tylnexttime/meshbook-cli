@@ -543,7 +543,11 @@ def _paging(
     truncated = bool(getattr(rows, "truncated", False))
     if total is None:
         return None, bool(getattr(rows, "has_more", False))
-    if limit is not None and n >= limit and total == n:
+    # SDK 0.4.2: total_exact says the server sent its paging beside a TRUE
+    # total, so a full last page is the last page; only an inexact total
+    # keeps the old page-length ambiguity.
+    exact = bool(getattr(rows, "total_exact", False))
+    if not exact and limit is not None and n >= limit and total == n:
         return None, True
     return total, total > (offset or 0) + n or truncated
 
