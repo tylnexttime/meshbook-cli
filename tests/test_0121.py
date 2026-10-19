@@ -221,7 +221,7 @@ def test_offset_is_refused_before_anything_is_sent(api, run, argv, cursor):
     e = run("--json", *argv, "--offset", "20").err_json()["error"]
     assert e["code"] == "bad_argument"
     assert e["hintCode"] == ("use_before_cursor" if cursor else "fix_argument")
-    assert e["status"] == 0
+    assert e["status"] is None          # 0.12.2: null, not 0 (no HTTP answer)
 
 
 @pytest.mark.parametrize("argv", [("chat", "list"), ("chat", "search", "q"),

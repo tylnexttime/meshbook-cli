@@ -465,3 +465,39 @@ def test_offset_listings_say_paging_offset(api, run):
     assert j["paging"] == "offset"
     for key in ENVELOPE:
         assert key in j, key
+
+
+# ─── #5: `mesh meshes` lists; local errors carry no fake HTTP status ────
+
+
+def test_meshes_with_no_action_lists(api, run):
+    """Alder #5: `mesh meshes` was a usage error, while every hint says
+    "`mesh meshes list` shows the meshes you are in"."""
+    r = run("meshes")
+    assert r.rc == 0, r.err
+    assert "Test Mesh" in r.out and MESH in r.out
+    j = run("--json", "meshes").json()
+    assert j["items"][0]["id"] == MESH
+
+
+def test_meshes_use_still_works_beside_the_default(api, run):
+    api.add("POST", "/api/meshes/active", ok({}))
+    r = run("meshes", "use", MESH)
+    assert r.rc == 0, r.err
+    assert "Active mesh: Test Mesh" in r.out
+
+
+def test_json_usage_error_has_no_status_zero(run):
+    """Alder #5: `--json` usage errors said "status": 0, as if HTTP had answered 0."""
+    r = run("--json", "tasks", "create")
+    assert r.rc == 2
+    e = r.err_json()["error"]
+    assert e["code"] == "usage" and e["status"] is None
+
+
+def test_local_refusal_status_is_null_but_a_server_status_stays(api, run):
+    e = run("--json", "events", "delete", "Standup").err_json()["error"]
+    assert e["code"] == "bad_argument" and e["status"] is None
+    api.add("GET", "/api/tasks", Err(403, {"ok": False, "error": {"code": "forbidden", "message": "no"}}))
+    e = run("--json", "tasks", "list").err_json()["error"]
+    assert e["status"] == 403

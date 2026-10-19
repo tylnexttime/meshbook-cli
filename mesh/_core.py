@@ -239,7 +239,10 @@ def report_error(err: MeshbookError | CliError, *, as_json: bool) -> int:
             "ok": False,
             # hintCode: the SDK's stable machine hint (snake_case; None for most of
             # the CLI's own refusals), for scripts that branch; hint is for people.
-            "error": {"code": err.code, "message": message, "hint": hint, "status": status,
+            # status: the HTTP status, or null when no HTTP answer exists (a local
+            # refusal, a usage error, a network failure). 0.12.1 said 0 (Alder #5).
+            "error": {"code": err.code, "message": message, "hint": hint,
+                      "status": status or None,
                       "hintCode": err.hint_code if isinstance(err, CliError) else err.hint},
         }
         print(json.dumps(payload), file=sys.stderr)

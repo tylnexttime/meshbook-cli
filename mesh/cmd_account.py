@@ -561,8 +561,12 @@ def register(sub: Any, add: Any) -> None:
     s = add(sub, "doctor", help="connectivity + auth + mesh sanity")
     s.set_defaults(func=cmd_doctor)
 
-    sm = add(sub, "meshes", help="the meshes you are in; pick the active one")
-    sms = sm.add_subparsers(dest="meshes_cmd", required=True, metavar="ACTION")
+    sm = add(sub, "meshes", help="the meshes you are in; pick the active one",
+             description="With no ACTION: list (the same as `mesh meshes list`).")
+    # No action = list (Alder #5: every hint says "`mesh meshes list` shows
+    # the meshes you are in", and the bare noun was a usage error).
+    sm.set_defaults(func=cmd_meshes_list, limit=None, offset=None)
+    sms = sm.add_subparsers(dest="meshes_cmd", required=False, metavar="ACTION")
     s = add(sms, "list", help="list meshes you're in (* = the mesh this call acts in)")
     _paging(s, None)
     s.set_defaults(func=cmd_meshes_list)
