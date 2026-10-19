@@ -4,6 +4,100 @@ All notable changes to `meshbook-cli` are documented here. The format follows [K
 
 ## [Unreleased]
 
+## [0.12.2] — 2026-10-19
+
+Answers Alder's 0.12 field notes (Alder tested 0.12.0 for real on a Windows
+bench on 19/10/2026, with real rows in two shared meshes, and wrote down every
+break, every clumsy edge and what worked). Thank you, Alder: notes #1-#6 and
+#9-#11 are addressed here; #7, #8 and #12 belong to meshbook-mcp or needed no
+change (see the notes below). Built on meshbook-sdk 0.4.2.
+
+### Fixed
+
+- **A recurring series now stores its own time zone** (field note #1). `--tz` on
+  `events create` used to change nothing about a series, so a weekly 10:00 Sydney
+  meeting showed at 09:00 after DST ended unless every reader passed `--tz`.
+  `--repeat` on `create` and `update` now sends the series' IANA zone (the
+  recurrence `tzid`): `--tz` if given, else this machine's zone (0.12.1's Windows
+  mapping included). Output: `repeats: weekly (wall clock: Australia/Sydney)`. With
+  no zone known, or a server from before 2026-10-19 that drops the key, the output
+  says the series repeats on the UTC wall clock.
+- **The UTC offset is per row when a listing crosses DST** (field note #1b). The
+  header's offset was computed once, at the window's start. One shared offset keeps
+  the plain header; several put the offset on each timed row
+  (`Mon 2027-04-05 10:00-11:00 UTC+10:00`); an empty window names both ends.
+- **`events update --start` without `--end` keeps the duration** (field note #2):
+  10:00-11:00 moved to 11:00 had become 11:00-11:00. The event is read first and
+  the end moves with the start: the same length for a timed event (across DST too),
+  the same number of days for an all-day event (which now also takes a bare date
+  without `--all-day`). A zero-length meeting left by 0.12.0 gets the default hour;
+  a Deadline or Milestone stays a point in time. `--end` alone is still an
+  explicit end.
+- **`tasks create --assignee` is checked and shown** (field note #3). The CLI sent
+  `assigneeUserId` and the server stored it, but the output never said so and the
+  server's `assignees` list (lead and task_assignees only, before its round-3 fix)
+  read `[]`. Now the stored assignee is checked: missing or different is
+  `assignee_not_stored`, exit 1, with the task id and how to retry; success prints
+  `assignee: Alder (@alder)`. The same on `tasks update --assignee`. `tasks show`
+  no longer hides the assignee behind the lead.
+- **`whoami` is loud about a mesh that does not resolve** (field note #6): a typo'd
+  `--mesh` or `MESHBOOK_MESH` exited 0 and dropped the line. Now a stderr warning
+  with your meshes and exit 1; JSON gains `meshForCall` and `meshError`.
+- The DST note is not printed over zero events, and only over a series that has no
+  zone of its own (field note #9). A notification with an empty summary no longer
+  ends in a dangling ` - ` (field note #9).
+- `events update` names the zone after an update that sent no time, such as an
+  attendee-only update (field note #10).
+- A last page of exactly `--limit` rows from the 2026-10-19 server (a true total)
+  offered `more: --offset N`; SDK 0.4.2's `total_exact` now decides.
+
+### Added
+
+- **"Did you mean ...?" on `user_not_found`** (field note #11): `--attendee "user:Chris
+  Tyl"` now suggests `Christopher Tyl (@chris)` from the mesh's members, for every
+  verb that resolves a member.
+- **`mesh agent recover [--bundle FILE]`** and **`mesh agent discard --yes`** for a
+  key an interrupted enroll/register left pending (SDK 0.4.2 `recover_pending()` /
+  `discard_pending()`). Discard needs `--yes` and says to try recover first.
+- `mesh meshes` with no action lists your meshes (field note #5).
+- `paging` in every JSON listing envelope: `offset`, `before`, `limit` or `none`.
+
+### Changed
+
+- **Depends on `meshbook-sdk>=0.4.2,<0.5`** (runtime, `[agent]`, `[dev]`): the
+  recurrence tzid, `create(tz=)`, the `server_too_old` hint and the pending-key
+  calls are 0.4.2 surface. Publish meshbook-sdk 0.4.2 first.
+- **One JSON listing envelope everywhere** (field note #4): `members list` is now
+  `{items, count, total, limit, offset, hasMore, paging}` plus `mesh`, `meshId`,
+  `pendingInvites`, `pendingRequests`; its 0.12.1 key `members` stays as an alias
+  until 0.13. `offset` is `null` unless `paging` is `offset`; the chat lists report
+  the `limit` asked for instead of `null`.
+- **JSON errors say `"status": null`, not `0`,** when there was no HTTP answer
+  (usage errors, local refusals, network failures; field note #5).
+- **An older server is recognised by the SDK's `server_too_old` hint**, not by
+  matching FastAPI's "Not Found" text; the 0.12.1 fallback for a bare 401 is gone
+  too (SDK 0.4.2 gives every 401 `reauthenticate`).
+- The pinned OpenAPI spec is SDK 0.4.2's (server main 350ac77).
+
+### Not changed here
+
+- Field notes #7 (CLI and MCP event defaults and field names differ) and #8 (the
+  MCP's rich traceback and update banner on stderr) are meshbook-mcp's. #4's MCP
+  half (`list_events` has no `offset`/`hasMore`) is too.
+- Field note #12: nothing Windows-only broke; the Windows zone trap it names is
+  what the series tzid removes.
+- The stale invitation in #9 and the assignee list in #3 are fixed on the server
+  (round 3).
+
+### Upgrading from 0.12.1
+
+- Scripts reading `members list --json` should read `.items` (`.members` still
+  works until 0.13).
+- `whoami` exits 1 when `--mesh`/`MESHBOOK_MESH` does not resolve.
+- `tasks create/update --assignee` exits 1 if the server did not store the
+  assignee (the task itself was created or updated: the message gives its id).
+- `"status": 0` in JSON errors is now `null`.
+
 ## [0.12.1] — 2026-10-19
 
 A fast follow to 0.12.0: the CLI moves onto meshbook-sdk 0.4.1 (a security

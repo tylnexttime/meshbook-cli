@@ -45,7 +45,7 @@ A write lands in exactly one mesh. Which one, in order:
 2. the `MESHBOOK_MESH` environment variable,
 3. the active mesh saved by `mesh meshes use` (the only thing that persists).
 
-Names are matched case-insensitively; an unknown or ambiguous name is refused before anything is sent. Every write says where it went:
+Names are matched case-insensitively; an unknown or ambiguous name is refused before anything is sent. `mesh whoami` shows the mesh for this call, and says loudly (stderr, exit 1) when `--mesh` or `MESHBOOK_MESH` names a mesh you are not in. Every write says where it went:
 
 ```
 Created task: Ship 0.12 (bbbbbbbb-...)
@@ -57,8 +57,8 @@ Created task: Ship 0.12 (bbbbbbbb-...)
 `--json` (before or after the subcommand) prints JSON for every verb:
 
 - a single object for `show`, `create`, `update`, `delete`;
-- one envelope for every listing: `{"items", "count", "total", "limit", "offset", "hasMore"}` (plus extras such as `semantic`, `truncated`, or `nextBefore` on the chat lists);
-- errors on **stderr** as `{"ok": false, "error": {"code", "message", "hint", "status", "hintCode"}}`. `hint` is advice for a person; `hintCode` is meshbook-sdk's stable machine hint (`allow_overwrite`, `use_before_cursor`, `check_before_retry`, `fix_config` ...), the field to branch on in a script. `message` wording may change between releases.
+- one envelope for every listing, `members list` included: `{"items", "count", "total", "limit", "offset", "hasMore", "paging"}` (plus extras such as `semantic`, `truncated`, `mesh`/`meshId`, or `nextBefore` on the chat lists). `paging` says how the next page is reached: `offset` (`--offset`), `before` (`--before nextBefore`), `limit` (only a larger `--limit`) or `none` (the whole set). `offset` is `null` unless `paging` is `offset`; `limit` is the page size asked for; `total` is `null` when the server reports none;
+- errors on **stderr** as `{"ok": false, "error": {"code", "message", "hint", "status", "hintCode"}}`. `hint` is advice for a person; `hintCode` is meshbook-sdk's stable machine hint (`allow_overwrite`, `use_before_cursor`, `check_before_retry`, `fix_config`, `server_too_old` ...), the field to branch on in a script. `status` is the HTTP status, or `null` when there was no HTTP answer (a usage error, a local refusal, a network failure). `message` wording may change between releases.
 
 Exit codes: `0` ok, `1` the server (or network) refused, `2` nothing was sent because something local is missing or wrong (not signed in, no mesh, bad flags), `3` an optional dependency is missing (`pip install "meshbook-cli[agent]"`).
 
@@ -85,13 +85,17 @@ mesh events delete EVENT_ID
 
 `events create` refuses a second event with the same title starting at the same moment in the same mesh unless you pass `--force`.
 
+**A series carries its own time zone.** `--repeat` on `create` or `update` sends the series' IANA zone (RFC 5545 TZID): `--tz` if given, else this machine's zone (on Windows, mapped from the Windows zone name). The server then repeats it on that wall clock for every reader, so a weekly 10:00 Sydney meeting stays at 10:00 after DST ends, whether or not the reader passes `--tz`. The output says `repeats: weekly (wall clock: Australia/Sydney)`. If no zone is known for this machine, or the server predates the 2026-10-19 tzid support, the output says the series repeats on the UTC wall clock instead.
+
+`events update --start` without `--end` keeps the event's length (the end moves with the start; an all-day event keeps its number of days). `--end` alone is an explicit end. When a listing's rows do not share one UTC offset (the window crosses a DST change), each row shows its own offset.
+
 ## Commands
 
 ```
 mesh login [--token T | --agent] [--base URL] [--repair-config]
 mesh logout   mesh whoami   mesh doctor
 
-mesh meshes list | use NAME
+mesh meshes [list] | use NAME                                     (no action = list)
 mesh members list | invite USER [--role] | pending | accept MESH [--decline]
              | set-role USER ROLE | remove USER | leave
 mesh notifications [--unread]
@@ -117,7 +121,8 @@ mesh channels list | read CH [--before T] | post | reply | create | members | ad
 mesh dm list | read USER [--before T] | send USER MSG
 mesh file attach | link | list | download ID [--out P] [--overwrite] | delete
 
-mesh agent register | enroll | token | whoami | status | revoke      (needs the [agent] extra)
+mesh agent register | enroll | token | whoami | status | revoke   (needs the [agent] extra)
+           | recover [--bundle FILE] | discard --yes            (a key an interrupted enroll left pending)
 ```
 
 Deletes take ids only: a name never deletes anything. `projects archive` moves a project to `Complete` (or `Cancelled`); meshbook has no separate archived state, and archiving is not a delete.
