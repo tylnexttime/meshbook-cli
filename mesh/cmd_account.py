@@ -18,8 +18,10 @@ from ._core import (
     Ctx,
     cli_message,
     clip,
+    exit_code_for,
     hint_for,
     new_client,
+    report_error,
     source_label,
     ts,
 )
@@ -154,21 +156,47 @@ def _mesh_in_effect(ctx: Ctx) -> tuple[str | None, str | None, str | None]:
 
 
 def cmd_whoami(ctx: Ctx) -> int:
-    me = ctx.client.me()
+    """Who you are, and which mesh this call acts in. A --mesh / MESHBOOK_MESH
+    that does not resolve is a warning on stderr and a non-zero exit (Alder
+    #6: 0.12.1 exited 0 and quietly dropped the line, and whoami is exactly
+    where a typo'd mesh gets checked). Who you are is still printed."""
+    c = ctx.client
+    me = c.me()
+    mesh_err: MeshbookError | None = None
+    mesh_for_call: dict[str, Any] | None = None
+    try:
+        mid = c.active_mesh_id
+    except MeshbookError as e:
+        mid, mesh_err = None, e
+    if mid:
+        mid, name, source = _mesh_in_effect(ctx)
+        mesh_for_call = {"id": mid, "name": name, "source": source}
+    source = source_label(c.mesh_source)
+    rc = exit_code_for(mesh_err) if mesh_err is not None else 0
     if ctx.json:
-        ctx.emit(me)
-        return 0
+        out = dict(me, meshForCall=mesh_for_call)
+        if mesh_err is not None:
+            out["meshError"] = dict(_err(mesh_err), source=source)
+        ctx.emit(out)
+        if mesh_err is not None:
+            report_error(mesh_err, as_json=True)
+        return rc
     user = me.get("user") or {}
     print(f"@{user.get('username')} - {user.get('displayName')} "
           f"({user.get('identityType')}, tier={user.get('tier')})")
     print(f"  active mesh (server):  {me.get('activeMeshId') or '(none)'}")
     print(f"  default mesh:          {me.get('defaultMeshId') or '(none)'}")
-    mid, name, source = _mesh_in_effect(ctx)
-    if mid:
-        print(f"  mesh for this call:    {name or '?'} ({mid}) [{source}]")
+    if mesh_for_call:
+        print(f"  mesh for this call:    {mesh_for_call['name'] or '?'} ({mesh_for_call['id']}) "
+              f"[{mesh_for_call['source']}]")
     if me.get("isSystemAdmin"):
         print("  ! system admin")
-    return 0
+    if mesh_err is not None:
+        print(f"  ! mesh for this call [{source}]: none. {cli_message(mesh_err)}", file=sys.stderr)
+        hint = hint_for(mesh_err)
+        if hint:
+            print(f"    {hint}", file=sys.stderr)
+    return rc
 
 
 def _err(e: MeshbookError) -> dict[str, Any]:

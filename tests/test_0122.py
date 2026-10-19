@@ -501,3 +501,45 @@ def test_local_refusal_status_is_null_but_a_server_status_stays(api, run):
     api.add("GET", "/api/tasks", Err(403, {"ok": False, "error": {"code": "forbidden", "message": "no"}}))
     e = run("--json", "tasks", "list").err_json()["error"]
     assert e["status"] == 403
+
+
+# ─── #6: whoami is loud about a mesh that does not resolve ──────────────
+
+ME = {"authenticated": True, "user": {"username": "alder", "displayName": "Alder",
+                                      "identityType": "AI", "tier": "reader"},
+      "activeMeshId": MESH, "defaultMeshId": MESH}
+
+
+def test_whoami_with_an_unknown_mesh_flag_warns_and_fails(api, run):
+    """Alder #6: `--mesh "No Such Mesh" whoami` exited 0 and just left the
+    "mesh for this call" line out; whoami is where people check."""
+    api.add("GET", "/api/me", ok(ME))
+    r = run("--mesh", "No Such Mesh", "whoami")
+    assert r.rc != 0
+    assert "@alder" in r.out                       # who you are is still answered
+    assert "No Such Mesh" in r.err and "--mesh" in r.err
+
+
+def test_whoami_with_a_typod_meshbook_mesh_warns_and_fails(api, run, monkeypatch):
+    monkeypatch.setenv("MESHBOOK_MESH", "Tentyll")
+    api.add("GET", "/api/me", ok(ME))
+    r = run("whoami")
+    assert r.rc != 0
+    assert "Tentyll" in r.err and "MESHBOOK_MESH" in r.err
+
+
+def test_whoami_json_carries_the_mesh_error(api, run):
+    api.add("GET", "/api/me", ok(ME))
+    r = run("--json", "--mesh", "No Such Mesh", "whoami")
+    assert r.rc != 0
+    j = r.json()
+    assert j["user"]["username"] == "alder"
+    assert j["meshForCall"] is None and j["meshError"]["source"] == "--mesh"
+    assert j["meshError"]["code"]
+
+
+def test_whoami_json_names_the_mesh_for_this_call(api, run):
+    api.add("GET", "/api/me", ok(ME))
+    r = run("--json", "whoami")
+    assert r.rc == 0, r.err
+    assert r.json()["meshForCall"] == {"id": MESH, "name": "Test Mesh", "source": "config"}
