@@ -28,7 +28,7 @@ from typing import Any
 from meshbook import MeshbookError
 
 from . import cmd_account, cmd_chat, cmd_crm, cmd_events, cmd_work
-from ._core import CliError, Ctx, configure_stdio, report_error
+from ._core import CliError, Ctx, configure_stdio, report_error, with_member_suggestions
 from ._version import VERSION
 
 __all__ = ["VERSION", "build_parser", "main"]
@@ -102,7 +102,11 @@ def main(argv: list[str] | None = None) -> int:
     ctx = Ctx(args)
     try:
         rc = args.func(ctx)
-    except (MeshbookError, CliError) as e:
+    except MeshbookError as e:
+        if e.code == "user_not_found" and ctx._client is not None:
+            return report_error(with_member_suggestions(e, ctx._client), as_json=ctx.json)
+        return report_error(e, as_json=ctx.json)
+    except CliError as e:
         return report_error(e, as_json=ctx.json)
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)

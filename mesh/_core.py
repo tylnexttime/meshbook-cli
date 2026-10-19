@@ -137,7 +137,72 @@ HINTS = {
     "key_exists": "Pass --force to replace it (the old key stops working immediately).",
     "config_locked": "Another meshbook process is writing the config file. Try again.",
     "reader_cannot_edit": "Your role in this mesh is read-only.",
+    "user_not_found": (
+        "Pass the exact display name or @username (`mesh members list` shows them), or the id."
+    ),
 }
+
+
+def _user_label(u: Mapping[str, Any]) -> str:
+    name = u.get("displayName") or u.get("display_name") or ""
+    handle = f"@{u['username']}" if u.get("username") else ""
+    return f"{name} ({handle})" if name and handle else (name or handle)
+
+
+def close_members(target: str, users: Iterable[Mapping[str, Any]], n: int = 3) -> list[str]:
+    """Members whose display name or username is close to *target*: a fuzzy
+    ratio (difflib), or every word of *target* starting a word of theirs
+    ("Chris Tyl" -> "Christopher Tyl")."""
+    import difflib
+
+    want = target.strip().lstrip("@").casefold()
+    words = want.split()
+    scored: list[tuple[float, str]] = []
+    for u in users:
+        label = _user_label(u)
+        if not label:
+            continue
+        best = 0.0
+        for cand in (u.get("displayName") or u.get("display_name"), u.get("username")):
+            text = str(cand or "").casefold()
+            if not text:
+                continue
+            ratio = difflib.SequenceMatcher(None, want, text).ratio()
+            theirs = text.split()
+            if words and len(words) <= len(theirs) and all(
+                any(t.startswith(w) for t in theirs) for w in words
+            ):
+                ratio = max(ratio, 0.9)
+            best = max(best, ratio)
+        if best >= 0.6:
+            scored.append((best, label))
+    scored.sort(key=lambda s: -s[0])
+    return [label for _, label in scored[:n]]
+
+
+def with_member_suggestions(err: MeshbookError, client: Client) -> MeshbookError | CliError:
+    """``user_not_found`` → the same error, plus "Did you mean ...?" from the
+    mesh's members (Alder #11: "user:Chris Tyl" missed "Christopher Tyl").
+    The name is read from the SDK's message, the only place it is carried;
+    if that or the roster read fails, the original error stands."""
+    import ast
+    import re
+
+    m = re.search(r"matching ('.*'|\".*\")\.?$", err.message or "")
+    if not m:
+        return err
+    try:
+        target = str(ast.literal_eval(m.group(1)))
+        users = list(client.users.list(lite=True, limit=500))
+    except (ValueError, SyntaxError, MeshbookError):
+        return err
+    near = close_members(target, users)
+    if not near:
+        return err
+    out = CliError(err.code, f"{err.message} Did you mean {' or '.join(near)}?", exit_code=1,
+                   hint=HINTS["user_not_found"], hint_code=err.hint)
+    out.status = err.status
+    return out
 
 #: CLI wording for meshbook-sdk's machine hints (``MeshbookError.hint``, SDK
 #: 0.4.1). The SDK's messages are written for Python callers and may name

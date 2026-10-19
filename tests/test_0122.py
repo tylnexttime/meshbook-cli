@@ -543,3 +543,31 @@ def test_whoami_json_names_the_mesh_for_this_call(api, run):
     r = run("--json", "whoami")
     assert r.rc == 0, r.err
     assert r.json()["meshForCall"] == {"id": MESH, "name": "Test Mesh", "source": "config"}
+
+
+# ─── #11: user_not_found suggests close matches from the mesh ───────────
+
+CHRIS = {"id": U2, "username": "chris", "displayName": "Christopher Tyl"}
+
+
+def test_attendee_not_found_suggests_the_close_member(api, run):
+    """Alder #11: `--attendee "user:Chris Tyl"` was a bare 404 user_not_found;
+    his display name is Christopher Tyl, and the roster is right there."""
+    api.add("GET", "/api/users", ok_list([CHRIS, ALDER]))
+    r = run("events", "create", "--title", "X", "--start", "2026-10-22 10:00", "--force",
+            "--attendee", "user:Chris Tyl")
+    assert r.rc == 1
+    assert "Did you mean Christopher Tyl (@chris)?" in r.err
+    assert not api.calls("POST", CAL)
+    e = run("--json", "events", "create", "--title", "X", "--start", "2026-10-22 10:00",
+            "--force", "--attendee", "user:Chris Tyl").err_json()["error"]
+    assert e["code"] == "user_not_found" and e["status"] == 404
+    assert "Christopher Tyl" in e["message"]
+
+
+def test_no_suggestion_when_nothing_is_close(api, run):
+    api.add("GET", "/api/users", ok_list([CHRIS, ALDER]))
+    r = run("tasks", "list", "--assignee", "Zebediah")
+    assert r.rc == 1
+    assert "did you mean" not in r.err.lower()
+    assert "mesh members list" in r.err
