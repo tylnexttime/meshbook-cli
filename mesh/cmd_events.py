@@ -244,24 +244,72 @@ def cmd_events_show(ctx: Ctx) -> int:
     return 0
 
 
-def _times(a: Any, tz: _dt.tzinfo | None, *, create: bool) -> tuple[Any, Any, str | None]:
+def _times(
+    a: Any, tz: _dt.tzinfo | None, *, create: bool, all_day: bool | None = None
+) -> tuple[Any, Any, str | None]:
     """--start/--end → (start, end, zone label). On create, --end defaults to
-    an hour after --start (a day, for an all-day event)."""
+    an hour after --start (a day, for an all-day event). *all_day*: whether
+    the result is all-day (default: --all-day); on update an event that is
+    already all-day takes a bare date without the flag."""
+    all_day = bool(a.all_day) if all_day is None else all_day
     start: Any = UNSET
     end: Any = UNSET
     label = None
     if a.start:
         start, date_only = _when.parse_when(a.start, tz=tz, field="start")
-        if date_only and not a.all_day:
+        if date_only and not all_day:
             raise CliError("bad_argument",
                            "--start is a date without a time: give a time, or pass --all-day.")
         label = _when.zone_label(tz, start)
     if a.end:
-        end, _ = _when.parse_when(a.end, tz=tz, end_of_day=bool(a.all_day), field="end")
+        end, _ = _when.parse_when(a.end, tz=tz, end_of_day=all_day, field="end")
         label = label or _when.zone_label(tz, end)
     if create and end is UNSET and start is not UNSET:
-        end = start + (_dt.timedelta(days=1) if a.all_day else _dt.timedelta(hours=1))
+        end = start + (_dt.timedelta(days=1) if all_day else _dt.timedelta(hours=1))
     return start, end, label
+
+
+#: Event types that may be a point in time (end == start); the 2026-10-19
+#: server refuses a zero-length span for every other type.
+POINT_TYPES = ("Deadline", "Milestone")
+
+
+def _local_date(when: _dt.datetime, tz: _dt.tzinfo | None) -> _dt.date:
+    return (when.astimezone(tz) if tz is not None else when.astimezone()).date()
+
+
+def _kept_end(
+    ev: dict[str, Any], start: _dt.datetime, tz: _dt.tzinfo | None, *,
+    all_day: bool, event_type: str | None,
+) -> tuple[_dt.datetime, str]:
+    """The end for ``update --start`` without ``--end`` (Alder #2): the
+    event's own length, moved with the start. → (end, what was kept).
+
+    * timed → timed: the same absolute duration (a 90-minute meeting stays
+      90 minutes across a DST change); a zero-length row (0.12.0 made those)
+      gets the default hour, unless it is a Deadline/Milestone point;
+    * all-day: the same number of DAYS, ending at local midnight (counting
+      hours would end a 2-day event at 01:00 across the DST end);
+    * a change between timed and all-day: create's default (1 hour / 1 day).
+    """
+    old_start = _when.as_aware(ev.get("startAt"))
+    old_end = _when.as_aware(ev.get("endAt"))
+    was_all_day = bool(ev.get("isAllDay"))
+    if all_day:
+        days = 1
+        if was_all_day and old_start and old_end:
+            days = max(1, (_local_date(old_end, tz) - _local_date(old_start, tz)).days)
+        day = _local_date(start, tz) + _dt.timedelta(days=days)
+        return _when.midnight(day, tz), f"{days} day{'s' if days != 1 else ''}"
+    if was_all_day or old_start is None or old_end is None:
+        return start + _dt.timedelta(hours=1), "1:00, the default"
+    duration = old_end - old_start
+    if duration <= _dt.timedelta(0):
+        if (event_type or ev.get("eventType")) in POINT_TYPES:
+            return start, "a point in time"
+        return start + _dt.timedelta(hours=1), "1:00, the default (it was zero-length)"
+    mins = int(duration.total_seconds()) // 60
+    return start + duration, f"{mins // 60}:{mins % 60:02d}"
 
 
 def _clear(v: str | None) -> Any:
@@ -302,7 +350,18 @@ def cmd_events_create(ctx: Ctx) -> int:
 def cmd_events_update(ctx: Ctx) -> int:
     a = ctx.args
     tz = _when.zone(a.tz)
-    start, end, label = _times(a, tz, create=False)
+    current: dict[str, Any] | None = None
+    if a.start and not a.end:
+        # The server merges a PATCH with the stored end, so --start alone made
+        # 10:00-11:00 into 11:00-11:00 (Alder #2). Read the event to keep its
+        # length. (GET then PATCH: an edit landing in between is overwritten
+        # for the end only, the same as any read-modify-write.)
+        current = ctx.client.events.get(a.event_id)
+    all_day = a.all_day if a.all_day is not None else bool(current and current.get("isAllDay"))
+    start, end, label = _times(a, tz, create=False, all_day=all_day)
+    kept = None
+    if current is not None:
+        end, kept = _kept_end(current, start, tz, all_day=all_day, event_type=a.type)
     linked: tuple[Any, Any] = (UNSET, UNSET)
     if a.link and a.unlink:
         raise CliError("bad_argument", "Pass --link or --unlink, not both.")
@@ -328,8 +387,13 @@ def cmd_events_update(ctx: Ctx) -> int:
         attendees=a.attendee if a.attendee is not None else UNSET,
         recurrence=rec,
     )
+    # Alder #10: an update that sends no time still shows times, so it names
+    # their zone too (taken at the event's own start).
+    label = label or _when.zone_label(tz, _when.as_aware(data.get("startAt")))
     lines = [f"Updated event: {data.get('title')} ({a.event_id})",
-             f"  when: {_when_text(data, tz)}" + (f"  (times in {label})" if label else "")]
+             f"  when: {_when_text(data, tz)}  (times in {label})"]
+    if kept:
+        lines.append(f"  end: moved with the start (duration kept: {kept})")
     lines += _series_zone_lines(data, tzid, sent_rule=series) or ["  repeats: no"]
     ctx.wrote(*lines, data=data)
     return 0

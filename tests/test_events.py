@@ -151,12 +151,14 @@ def test_bad_time_is_a_clear_error(api, run):
 # ─── update / show / delete ─────────────────────────────────────────
 
 def test_update_sends_only_given_fields(api, run):
+    api.add("GET", f"{CAL}/{E1}", ok(_event()))       # 0.12.2: --start alone keeps the hour
     api.add("PATCH", f"{CAL}/{E1}", ok(_event(title="Moved")))
     r = run("events", "update", E1, "--start", "2026-10-22 10:00", "--location", "",
             "--no-repeat", "--tz", "Australia/Sydney")
     assert r.rc == 0, r.err
     body = api.body(api.one("PATCH", f"{CAL}/{E1}"))
-    assert body == {"startAt": "2026-10-22T10:00:00+11:00", "location": None, "recurrence": None}
+    assert body == {"startAt": "2026-10-22T10:00:00+11:00", "endAt": "2026-10-22T11:00:00+11:00",
+                    "location": None, "recurrence": None}
     assert "repeats: no" in r.out
 
 

@@ -231,3 +231,114 @@ def test_an_empty_window_across_dst_names_both_offsets(api, run):
     r = run("events", "list", "--from", "2027-03-29", "--to", "2027-04-06",
             "--tz", "Australia/Sydney")
     assert "UTC+11:00 -> UTC+10:00" in r.out
+
+
+# ─── #2: `events update --start` keeps the duration ─────────────────────
+
+
+def _syd(y, mo, d, h=0, mi=0) -> str:
+    return dt.datetime(y, mo, d, h, mi, tzinfo=SYD).isoformat()
+
+
+def _patch_body(api):
+    return api.body(api.one("PATCH", f"{CAL}/{E1}"))
+
+
+def test_update_start_alone_keeps_the_duration(api, run):
+    """Alder #2: 10:00-11:00 moved with --start 11:00 became 11:00-11:00."""
+    api.add("GET", f"{CAL}/{E1}", ok(_ev(startAt=_syd(2026, 10, 22, 10), endAt=_syd(2026, 10, 22, 11))))
+    api.add("PATCH", f"{CAL}/{E1}", ok(_ev(startAt=_syd(2026, 10, 22, 11), endAt=_syd(2026, 10, 22, 12))))
+    r = run("events", "update", E1, "--start", "2026-10-22 11:00", "--tz", "Australia/Sydney")
+    assert r.rc == 0, r.err
+    body = _patch_body(api)
+    assert body["startAt"] == "2026-10-22T11:00:00+11:00"
+    assert body["endAt"] == "2026-10-22T12:00:00+11:00"
+    assert "duration kept" in r.out
+
+
+def test_the_duration_is_kept_across_a_dst_change(api, run):
+    """A 90-minute meeting stays 90 minutes when moved past the DST end."""
+    api.add("GET", f"{CAL}/{E1}", ok(_ev(startAt=_syd(2027, 4, 3, 10), endAt=_syd(2027, 4, 3, 11, 30))))
+    api.add("PATCH", f"{CAL}/{E1}", ok(_ev()))
+    run("events", "update", E1, "--start", "2027-04-10 10:00", "--tz", "Australia/Sydney")
+    body = _patch_body(api)
+    assert body["startAt"] == "2027-04-10T10:00:00+10:00"
+    assert body["endAt"] == "2027-04-10T11:30:00+10:00"
+
+
+def test_an_all_day_event_keeps_its_day_count(api, run):
+    """2 days stays 2 days, counted in days: 49 absolute hours across the DST
+    end would land the end at 01:00, not midnight. A bare date is fine on an
+    event that is already all-day (no --all-day needed)."""
+    api.add("GET", f"{CAL}/{E1}", ok(_ev(isAllDay=True, startAt=_syd(2027, 4, 3),
+                                         endAt=_syd(2027, 4, 5))))
+    api.add("PATCH", f"{CAL}/{E1}", ok(_ev(isAllDay=True)))
+    r = run("events", "update", E1, "--start", "2027-04-01", "--tz", "Australia/Sydney")
+    assert r.rc == 0, r.err
+    body = _patch_body(api)
+    assert body["startAt"] == "2027-04-01T00:00:00+11:00"
+    assert body["endAt"] == "2027-04-03T00:00:00+11:00"
+    assert "2 day" in r.out
+
+
+def test_all_day_day_count_across_dst(api, run):
+    api.add("GET", f"{CAL}/{E1}", ok(_ev(isAllDay=True, startAt=_syd(2027, 4, 3),
+                                         endAt=_syd(2027, 4, 5))))
+    api.add("PATCH", f"{CAL}/{E1}", ok(_ev(isAllDay=True)))
+    run("events", "update", E1, "--start", "2027-04-10", "--tz", "Australia/Sydney")
+    assert _patch_body(api)["endAt"] == "2027-04-12T00:00:00+10:00"
+
+
+def test_start_and_end_together_need_no_lookup(api, run):
+    api.add("PATCH", f"{CAL}/{E1}", ok(_ev()))
+    r = run("events", "update", E1, "--start", "2026-10-22 11:00", "--end", "2026-10-22 11:15",
+            "--tz", "Australia/Sydney")
+    assert r.rc == 0, r.err
+    assert not api.calls("GET", f"{CAL}/{E1}")
+    assert _patch_body(api)["endAt"] == "2026-10-22T11:15:00+11:00"
+
+
+def test_end_alone_is_an_explicit_end(api, run):
+    api.add("PATCH", f"{CAL}/{E1}", ok(_ev()))
+    run("events", "update", E1, "--end", "2026-10-22 13:00", "--tz", "Australia/Sydney")
+    assert not api.calls("GET", f"{CAL}/{E1}")
+    assert _patch_body(api) == {"endAt": "2026-10-22T13:00:00+11:00"}
+
+
+def test_a_zero_length_meeting_gets_the_default_hour(api, run):
+    """A row 0.12.0 already broke (start == end) is repaired, not copied: the
+    2026-10-19 server refuses a zero-length Meeting (422 invalid_time_range)."""
+    api.add("GET", f"{CAL}/{E1}", ok(_ev(startAt=_syd(2026, 10, 22, 11), endAt=_syd(2026, 10, 22, 11))))
+    api.add("PATCH", f"{CAL}/{E1}", ok(_ev()))
+    run("events", "update", E1, "--start", "2026-10-22 14:00", "--tz", "Australia/Sydney")
+    assert _patch_body(api)["endAt"] == "2026-10-22T15:00:00+11:00"
+
+
+def test_a_deadline_stays_a_point_in_time(api, run):
+    api.add("GET", f"{CAL}/{E1}", ok(_ev(eventType="Deadline", startAt=_syd(2026, 10, 22, 17),
+                                         endAt=_syd(2026, 10, 22, 17))))
+    api.add("PATCH", f"{CAL}/{E1}", ok(_ev()))
+    run("events", "update", E1, "--start", "2026-10-23 17:00", "--tz", "Australia/Sydney")
+    body = _patch_body(api)
+    assert body["endAt"] == body["startAt"] == "2026-10-23T17:00:00+11:00"
+
+
+def test_making_a_timed_event_all_day_gives_one_day(api, run):
+    api.add("GET", f"{CAL}/{E1}", ok(_ev(startAt=_syd(2026, 10, 22, 10), endAt=_syd(2026, 10, 22, 11))))
+    api.add("PATCH", f"{CAL}/{E1}", ok(_ev(isAllDay=True)))
+    run("events", "update", E1, "--start", "2026-10-23", "--all-day", "--tz", "Australia/Sydney")
+    body = _patch_body(api)
+    assert (body["startAt"], body["endAt"]) == ("2026-10-23T00:00:00+11:00", "2026-10-24T00:00:00+11:00")
+
+
+# ─── #10: the zone label survives an update that sends no time ──────────
+
+
+def test_attendee_only_update_still_names_the_zone(api, run):
+    """Alder #10: "when: ... 11:00-11:00" with no zone after an attendee-only update."""
+    api.add("GET", "/api/users", ok_list([{"id": U1, "username": "rook"}]))
+    api.add("PATCH", f"{CAL}/{E1}", ok(_ev(startAt=_syd(2026, 10, 22, 10), endAt=_syd(2026, 10, 22, 11))))
+    r = run("events", "update", E1, "--attendee", "user:@rook", "--tz", "Australia/Sydney")
+    assert r.rc == 0, r.err
+    when = next(ln for ln in r.out.splitlines() if "when:" in ln)
+    assert "10:00-11:00" in when and "(times in Australia/Sydney, UTC+11:00)" in when
