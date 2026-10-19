@@ -86,7 +86,10 @@ def test_force_skips_the_guard(api, run):
     assert api.calls("POST", CAL)
 
 
-def test_create_series_attendees_and_link(api, run):
+def test_create_series_attendees_and_link(api, run, monkeypatch):
+    from mesh import _when
+
+    monkeypatch.setattr(_when, "iana_name", lambda tz: tz or "Europe/Warsaw")
     api.add("GET", CAL, ok_list([]))
     api.add("GET", "/api/users", ok_list([{"id": U1, "username": "rook", "displayName": "Rook"}]))
     api.add("GET", "/api/contacts", ok_list([{"id": C1, "displayName": "Jane Doe"}]))
@@ -98,7 +101,8 @@ def test_create_series_attendees_and_link(api, run):
             "--link", f"project:{P1}", "--type", "call", "--location", "Room 1")
     assert r.rc == 0, r.err
     body = api.body(api.one("POST", CAL))
-    assert body["recurrence"] == {"frequency": "Weekly", "intervalN": 2, "untilDate": "2026-12-31"}
+    assert body["recurrence"] == {"frequency": "Weekly", "intervalN": 2, "untilDate": "2026-12-31",
+                                  "tzid": "Europe/Warsaw"}   # 0.12.2: the machine zone (#1)
     assert body["attendees"] == [{"userId": U1}, {"contactId": C1}]
     assert (body["linkedEntityType"], body["linkedEntityId"]) == ("project", P1)
     assert body["eventType"] == "Call"         # case-insensitive flag, canonical on the wire
@@ -156,13 +160,17 @@ def test_update_sends_only_given_fields(api, run):
     assert "repeats: no" in r.out
 
 
-def test_update_attendees_replace_and_repeat(api, run):
+def test_update_attendees_replace_and_repeat(api, run, monkeypatch):
+    from mesh import _when
+
+    monkeypatch.setattr(_when, "iana_name", lambda tz: tz or "Europe/Warsaw")
     api.add("GET", "/api/users", ok_list([{"id": U1, "username": "rook"}]))
     api.add("PATCH", f"{CAL}/{E1}", ok(_event(recurrence={"frequency": "Monthly", "intervalN": 1})))
     run("events", "update", E1, "--attendee", "user:@rook", "--repeat", "monthly", "--no-all-day")
     body = api.body(api.one("PATCH", f"{CAL}/{E1}"))
     assert body["attendees"] == [{"userId": U1}]
-    assert body["recurrence"] == {"frequency": "Monthly", "intervalN": 1, "untilDate": None}
+    assert body["recurrence"] == {"frequency": "Monthly", "intervalN": 1, "untilDate": None,
+                                  "tzid": "Europe/Warsaw"}
     assert body["isAllDay"] is False
 
 
@@ -257,7 +265,12 @@ def test_list_without_known_iana_zone_says_utc_wall_clock(api, run, monkeypatch)
     from mesh import _when
 
     monkeypatch.setattr(_when, "iana_name", lambda tz: None)
-    api.add("GET", CAL, ok_list([]))
+    # 0.12.2: only over a series that has no zone of its own (and never over
+    # an empty listing, Alder #9).
+    occ = _event(occurrenceStart="2026-10-20T22:00:00+00:00",
+                 occurrenceEnd="2026-10-20T23:00:00+00:00",
+                 recurrence={"frequency": "Weekly", "intervalN": 1})
+    api.add("GET", CAL, ok_list([occ]))
     r = run("events", "list", "--today")
     assert "tz" not in api.query(api.one("GET", CAL))
     assert "UTC wall clock" in r.out

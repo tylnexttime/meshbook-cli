@@ -98,10 +98,58 @@ def zone_label(tz: _dt.tzinfo | None, when: _dt.datetime | None = None) -> str:
         when = _dt.datetime.now(tz) if tz is not None else _dt.datetime.now()
     aware = when.astimezone(tz) if tz is not None else when.astimezone()
     name = getattr(tz, "key", None) or aware.tzname() or "local"
-    off = aware.utcoffset() or _dt.timedelta(0)
+    return f"{name}, {offset_text(aware.utcoffset())}"
+
+
+def offset_text(off: _dt.timedelta | None) -> str:
+    """``UTC+11:00`` / ``UTC-03:30``."""
+    off = off or _dt.timedelta(0)
     sign = "+" if off >= _dt.timedelta(0) else "-"
     mins = abs(int(off.total_seconds())) // 60
-    return f"{name}, UTC{sign}{mins // 60:02d}:{mins % 60:02d}"
+    return f"UTC{sign}{mins // 60:02d}:{mins % 60:02d}"
+
+
+def as_aware(value: Any) -> _dt.datetime | None:
+    """A server timestamp (or a datetime) as an aware datetime; None if unreadable."""
+    if isinstance(value, _dt.datetime):
+        dt = value
+    else:
+        text = str(value or "")
+        if not text:
+            return None
+        if text.endswith(("Z", "z")):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = _dt.datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+        return None
+    return dt
+
+
+def offset_at(value: Any, tz: _dt.tzinfo | None) -> _dt.timedelta | None:
+    """The display zone's UTC offset at that instant (DST-aware), or None."""
+    dt = as_aware(value)
+    if dt is None:
+        return None
+    local = dt.astimezone(tz) if tz is not None else dt.astimezone()
+    return local.utcoffset()
+
+
+def zone_name(tz: _dt.tzinfo | None, when: _dt.datetime | None = None) -> str:
+    """The zone's name without an offset: the IANA key, else the machine's
+    IANA name, else what the OS calls it at *when*."""
+    key = getattr(tz, "key", None)
+    if key:
+        return str(key)
+    if tz is None:
+        iana = iana_name(None)
+        if iana:
+            return iana
+    when = when or _dt.datetime.now(_dt.timezone.utc)
+    aware = when.astimezone(tz) if tz is not None else when.astimezone()
+    return aware.tzname() or "local"
 
 
 def iana_name(tz_arg: str | None) -> str | None:
@@ -145,12 +193,16 @@ def show(value: Any, tz: _dt.tzinfo | None, fmt: str = "%a %Y-%m-%d %H:%M") -> s
 
 
 __all__ = [
+    "as_aware",
     "iana_name",
     "midnight",
+    "offset_at",
+    "offset_text",
     "parse_date",
     "parse_when",
     "show",
     "today",
     "zone",
     "zone_label",
+    "zone_name",
 ]

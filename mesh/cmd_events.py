@@ -71,14 +71,89 @@ def _when_text(ev: dict[str, Any], tz: _dt.tzinfo | None) -> str:
     return f"{first}-{last}"
 
 
-def _event_line(tz: _dt.tzinfo | None) -> Any:
+def _start_of(ev: dict[str, Any]) -> Any:
+    return ev.get("occurrenceStart") or ev.get("startAt")
+
+
+def _event_line(tz: _dt.tzinfo | None, *, offset_per_row: bool = False) -> Any:
+    """One listing row. *offset_per_row*: the rows do not share one UTC offset
+    (the window crosses a DST change), so each timed row says its own."""
     def row(ev: dict[str, Any]) -> str:
         rep = _repeat_text(ev.get("recurrence"))
         rep = f"  (repeats {rep})" if rep else ""
         loc = f"  @ {ev.get('location')}" if ev.get("location") else ""
-        return (f"  {_when_text(ev, tz)}  {ev.get('title')}  [{ev.get('eventType') or '?'}]"
+        when = _when_text(ev, tz)
+        if offset_per_row and not ev.get("isAllDay"):
+            off = _when.offset_at(_start_of(ev), tz)
+            if off is not None:
+                when += f" {_when.offset_text(off)}"
+        return (f"  {when}  {ev.get('title')}  [{ev.get('eventType') or '?'}]"
                 f"{loc}{rep}   {ev.get('id')}")
     return row
+
+
+def _is_series(ev: dict[str, Any]) -> bool:
+    rec = ev.get("recurrence")
+    return isinstance(rec, dict) and bool(rec.get("frequency"))
+
+
+def _list_zone_label(
+    tz: _dt.tzinfo | None, start: Any, end: Any, items: list[Any]
+) -> tuple[str, bool]:
+    """(the header's zone label, show the offset per row?).
+
+    0.12.1 computed one offset at the window's start, so a window crossing a
+    DST change said "UTC+11:00" over rows that were at +10:00 (Alder #1b).
+    Now: the rows' own offsets decide; one offset keeps the plain label, more
+    than one moves the offset onto each row. An empty window names the
+    offsets at both ends when they differ.
+    """
+    if items:
+        offsets = {_when.offset_at(_start_of(ev), tz) for ev in items if not ev.get("isAllDay")}
+        offsets.discard(None)
+        if len(offsets) > 1:
+            return f"{_when.zone_name(tz, start)}, UTC offset per row", True
+        if offsets:
+            when = next(_start_of(ev) for ev in items
+                        if not ev.get("isAllDay") and _when.offset_at(_start_of(ev), tz) is not None)
+            return _when.zone_label(tz, _when.as_aware(when)), False
+        return _when.zone_label(tz, start), False
+    if start is not None and end is not None:
+        first, last = _when.offset_at(start, tz), _when.offset_at(end, tz)
+        if first is not None and last is not None and first != last:
+            return (f"{_when.zone_name(tz, start)}, {_when.offset_text(first)} -> "
+                    f"{_when.offset_text(last)}"), False
+    return _when.zone_label(tz, start), False
+
+
+def _series_zone_lines(data: dict[str, Any], sent_tzid: str | None, *, sent_rule: bool) -> list[str]:
+    """What the server did with the series' time zone, in one or two lines.
+
+    * stored: ``repeats: weekly (wall clock: Australia/Sydney)``;
+    * sent but the server's recurrence has no ``tzid`` at all: a server from
+      before 2026-10-19 dropped it (pydantic ignores unknown keys), so say so;
+    * nothing known to send (an unmapped Windows zone, no --tz): the series
+      repeats on the UTC wall clock, and --tz is the fix.
+    """
+    rec = data.get("recurrence")
+    rep = _repeat_text(rec)
+    if not rep:
+        return []
+    stored = rec.get("tzid") if isinstance(rec, dict) else None
+    if stored:
+        return [f"  repeats: {rep} (wall clock: {stored})"]
+    lines = [f"  repeats: {rep}"]
+    if sent_rule and sent_tzid:
+        lines.append(f"  note: this server did not store the series zone ({sent_tzid}); until it "
+                     "is upgraded, occurrences repeat on the UTC wall clock and drift an hour "
+                     "across DST")
+    elif sent_rule:
+        lines.append("  note: no IANA zone is known for this machine, so the series repeats on "
+                     "the UTC wall clock; pass --tz Area/City to keep its local time across DST")
+    elif isinstance(rec, dict) and "tzid" in rec:
+        lines.append("  note: this series has no time zone (it repeats on the UTC wall clock); "
+                     "give it one with --repeat FREQ --tz Area/City")
+    return lines
 
 
 # ─── verbs ──────────────────────────────────────────────────────────────
@@ -111,20 +186,28 @@ def cmd_events_list(ctx: Ctx) -> int:
         expand=expand, tz=iana if expand else None, limit=a.limit, offset=a.offset,
     )
     header = None
+    per_row = False
     if not ctx.json:
-        zl = _when.zone_label(tz, start)
+        items = list(rows)
+        zl, per_row = _list_zone_label(tz, start, end, items)
         span = (f"{_when.show(start.isoformat(), tz, '%Y-%m-%d %H:%M')} -> "
                 f"{_when.show(end.isoformat(), tz, '%Y-%m-%d %H:%M')}") if window else "all dates"
         header = f"  Events {span}  (times in {zl}"
         header += ", occurrences expanded" if expand else ""
         header += ")"
-        if expand and not iana:
-            header += ("\n  note: recurrences repeat on the UTC wall clock; pass --tz Area/City "
-                       "to keep local times across DST")
+        # Only when it is true of a row on screen (Alder #9: it printed over
+        # "(no events)"): a series without its own tzid, expanded with no
+        # reader zone, repeats on the UTC wall clock.
+        if expand and not iana and any(
+            _is_series(ev) and not ev["recurrence"].get("tzid") for ev in items
+        ):
+            header += ("\n  note: a series without its own time zone repeats on the UTC wall "
+                       "clock; pass --tz Area/City to keep local times across DST")
         if rows.truncated:
             header += "\n  note: the server capped this window at 500 occurrences (narrow it)"
     extra = {"truncated": rows.truncated, "expanded": expand, "tz": iana}
-    return ctx.listing(rows, _event_line(tz), header=header, empty="  (no events)", extra=extra)
+    return ctx.listing(rows, _event_line(tz, offset_per_row=per_row), header=header,
+                       empty="  (no events)", extra=extra)
 
 
 def cmd_events_show(ctx: Ctx) -> int:
@@ -195,19 +278,21 @@ def cmd_events_create(ctx: Ctx) -> int:
     if a.link:
         linked_type, linked_id = _link(a.link, "--link")
     rec = _recurrence(a)
+    series = isinstance(rec, dict)
+    # Alder #1: the series' own zone (RFC 5545 TZID), so it keeps its wall
+    # clock across DST for EVERY reader, not only one who passes --tz.
+    tzid = _when.iana_name(a.tz) if series else None
     data = ctx.client.events.create(
         a.title, start, end,
         description=a.description, all_day=bool(a.all_day), event_type=a.type or "Meeting",
         location=a.location, meeting_url=a.url, owner=a.owner,
         linked_type=linked_type, linked_id=linked_id,
-        attendees=a.attendee, recurrence=None if rec is UNSET else rec,
-        dedupe=not a.force,
+        attendees=a.attendee, recurrence=rec if series else None,
+        tz=tzid, dedupe=not a.force,
     )
     lines = [f"Created event: {data.get('title')} ({data.get('id')})",
              f"  when: {_when_text(data, tz)}  (times in {label})"]
-    rep = _repeat_text(data.get("recurrence"))
-    if rep:
-        lines.append(f"  repeats: {rep}")
+    lines += _series_zone_lines(data, tzid, sent_rule=series)
     if data.get("attendees"):
         lines.append(f"  attendees: {len(data['attendees'])}")
     ctx.wrote(*lines, data=data)
@@ -225,6 +310,12 @@ def cmd_events_update(ctx: Ctx) -> int:
         linked = _link(a.link, "--link")
     elif a.unlink:
         linked = (None, None)
+    rec = _recurrence(a)
+    series = isinstance(rec, dict)
+    tzid = _when.iana_name(a.tz) if series else None
+    if series and tzid:
+        # Left out when unknown: the server then KEEPS a stored zone.
+        rec["tzid"] = tzid
     data = ctx.client.events.update(
         a.event_id,
         title=a.title if a.title is not None else UNSET,
@@ -235,12 +326,11 @@ def cmd_events_update(ctx: Ctx) -> int:
         location=_clear(a.location), meeting_url=_clear(a.url), owner=_clear(a.owner),
         linked_type=linked[0], linked_id=linked[1],
         attendees=a.attendee if a.attendee is not None else UNSET,
-        recurrence=_recurrence(a),
+        recurrence=rec,
     )
     lines = [f"Updated event: {data.get('title')} ({a.event_id})",
              f"  when: {_when_text(data, tz)}" + (f"  (times in {label})" if label else "")]
-    rep = _repeat_text(data.get("recurrence"))
-    lines.append(f"  repeats: {rep}" if rep else "  repeats: no")
+    lines += _series_zone_lines(data, tzid, sent_rule=series) or ["  repeats: no"]
     ctx.wrote(*lines, data=data)
     return 0
 
