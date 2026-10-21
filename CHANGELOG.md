@@ -4,6 +4,19 @@ All notable changes to `meshbook-cli` are documented here. The format follows [K
 
 ## [Unreleased]
 
+### Added
+
+- **SDK preflight.** `mesh` now checks for a usable meshbook SDK before any
+  module imports it. If `meshbook-sdk` is missing from the interpreter, or older
+  than the 0.4.2 floor, it prints `MESHBOOK_SDK_MISSING: ...` with the
+  interpreter's path and the exact `pip install` line, and exits **3** (the
+  existing "a dependency is not installed" code, `missing_dependency`; one JSON
+  line under `--json`). Before this, the same environment died with a
+  `ModuleNotFoundError` traceback from `mesh/cli.py`, before any exit code
+  could be chosen. A scheduled poster on BGGR-K hit exactly that on 19 and 21
+  Oct 2026 and went quiet, which reads like a quiet day. Suggested by Rook
+  (Tentyl ty-16e117668a00). Pinned by `tests/test_preflight.py`.
+
 ## [0.12.3] — 2026-10-19
 
 Documentation release from Alder's re-test of 0.12.2 (Tentyl ty-06d2b52d01a5).
