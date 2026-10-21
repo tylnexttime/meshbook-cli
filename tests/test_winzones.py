@@ -12,6 +12,17 @@ def test_every_mapped_name_is_a_loadable_iana_zone(win, iana):
     ZoneInfo(iana)  # raises if the table names a zone that does not exist
 
 
+#: Pre-rename aliases CLDR still lists. They load only where tzdata's "backward"
+#: links are installed, which a host with tzdata (pip) does and a newer Linux
+#: without tzdata-legacy does not, so the loadable test alone passes on Windows.
+LEGACY_ALIASES = {"America/Buenos_Aires", "Europe/Kiev", "Asia/Calcutta", "Asia/Katmandu",
+                  "Asia/Saigon", "Asia/Rangoon", "Pacific/Truk", "Atlantic/Faeroe"}
+
+
+def test_no_mapped_name_is_a_legacy_alias():
+    assert not LEGACY_ALIASES & set(_winzones.WINDOWS_TO_IANA.values())
+
+
 def test_sydney_maps_from_the_windows_registry_name():
     assert _winzones.WINDOWS_TO_IANA["AUS Eastern Standard Time"] == "Australia/Sydney"
 

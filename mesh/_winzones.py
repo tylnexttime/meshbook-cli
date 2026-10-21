@@ -4,7 +4,12 @@ Windows reports its zone as a registry key name ("AUS Eastern Standard Time"),
 which zoneinfo cannot load. Without an IANA name the server expands recurring
 events on the UTC wall clock, so a weekly 10:00 Sydney meeting drifts by an
 hour across DST. Mapping from CLDR windowsZones.xml, territory "001" (the
-canonical zone for each Windows id). An unknown id returns None and the CLI
+canonical zone for each Windows id), except where CLDR still lists a pre-rename
+alias: those use the current IANA name (Europe/Kyiv, Asia/Kolkata,
+Asia/Kathmandu, America/Argentina/Buenos_Aires). The aliases live only in
+tzdata's "backward" file, which newer Linux systems ship separately
+(tzdata-legacy), so a server or CI host without it could not load them (found
+by the ubuntu-latest CI on 22 Oct 2026). An unknown id returns None and the CLI
 keeps its old behaviour (it says recurrences repeat on UTC and suggests --tz).
 """
 
@@ -29,7 +34,7 @@ WINDOWS_TO_IANA: dict[str, str] = {
     "Central European Standard Time": "Europe/Warsaw",
     "Romance Standard Time": "Europe/Paris",
     "E. Europe Standard Time": "Europe/Chisinau",
-    "FLE Standard Time": "Europe/Kiev",
+    "FLE Standard Time": "Europe/Kyiv",
     "GTB Standard Time": "Europe/Bucharest",
     "Russian Standard Time": "Europe/Moscow",
     "Turkey Standard Time": "Europe/Istanbul",
@@ -40,8 +45,8 @@ WINDOWS_TO_IANA: dict[str, str] = {
     "Arab Standard Time": "Asia/Riyadh",
     "Iran Standard Time": "Asia/Tehran",
     "Pakistan Standard Time": "Asia/Karachi",
-    "India Standard Time": "Asia/Calcutta",
-    "Nepal Standard Time": "Asia/Katmandu",
+    "India Standard Time": "Asia/Kolkata",
+    "Nepal Standard Time": "Asia/Kathmandu",
     "Bangladesh Standard Time": "Asia/Dhaka",
     "SE Asia Standard Time": "Asia/Bangkok",
     "Singapore Standard Time": "Asia/Singapore",
@@ -62,7 +67,7 @@ WINDOWS_TO_IANA: dict[str, str] = {
     "Newfoundland Standard Time": "America/St_Johns",
     "SA Pacific Standard Time": "America/Bogota",
     "E. South America Standard Time": "America/Sao_Paulo",
-    "Argentina Standard Time": "America/Buenos_Aires",
+    "Argentina Standard Time": "America/Argentina/Buenos_Aires",
     "Pacific SA Standard Time": "America/Santiago",
     "Central Standard Time (Mexico)": "America/Mexico_City",
 }

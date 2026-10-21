@@ -18,6 +18,15 @@ Two guards against an environment that disagrees with the code it runs.
   `pyproject.toml`'s `[project]` version now wins; a wheel install still reads
   its metadata. pyproject.toml stays the single source, with no literal in the
   code. Pinned by `tests/test_0124.py`.
+- **Four Windows zones mapped to names every tz database knows.** The
+  Windows-to-IANA table took CLDR's ids as given, and CLDR still lists four
+  pre-rename aliases: `Europe/Kiev`, `Asia/Calcutta`, `Asia/Katmandu` and
+  `America/Buenos_Aires`. They are now `Europe/Kyiv`, `Asia/Kolkata`,
+  `Asia/Kathmandu` and `America/Argentina/Buenos_Aires`. The aliases load only
+  where tzdata's backward links are installed: the pip `tzdata` on Windows has
+  them, newer Linux hosts without `tzdata-legacy` do not. That broke CI's
+  ubuntu-latest jobs on the 0.12.4 tag, and would have broken a recurrence
+  tzid sent to such a server.
 
 ### Added
 
