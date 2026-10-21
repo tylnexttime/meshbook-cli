@@ -55,11 +55,12 @@ def _pyproject_version() -> str:
 
 
 def test_version_constant(run, api):
-    """The version is the INSTALLED metadata and must equal pyproject's.
+    """The version must equal pyproject's.
 
     0.11's test only checked the string's shape, which is how a stale venv
-    reporting 0.1.0 passed it. A mismatch here means a stale install (re-run
-    `pip install -e .`) or a literal crept back in.
+    reporting 0.1.0 passed it. Since 0.12.4 a source checkout reads
+    pyproject.toml directly (tests/test_0124.py), so a mismatch here means a
+    literal crept back in or _version.py stopped finding the checkout.
     """
     import mesh
 

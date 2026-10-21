@@ -4,6 +4,21 @@ All notable changes to `meshbook-cli` are documented here. The format follows [K
 
 ## [Unreleased]
 
+## [0.12.4] — 2026-10-22
+
+Two guards against an environment that disagrees with the code it runs.
+
+### Fixed
+
+- **The version follows pyproject.toml from a source checkout.** `VERSION`
+  (and `mesh --version`, and the `meshbook-cli/<version>` User-Agent) came
+  from installed package metadata, which an editable install writes once and
+  never refreshes. On 22 Oct 2026 the BGGR-K workspace venv reported 0.6.0
+  while running 0.12.3's code. When the package sits in its own checkout,
+  `pyproject.toml`'s `[project]` version now wins; a wheel install still reads
+  its metadata. pyproject.toml stays the single source, with no literal in the
+  code. Pinned by `tests/test_0124.py`.
+
 ### Added
 
 - **SDK preflight.** `mesh` now checks for a usable meshbook SDK before any
@@ -480,7 +495,18 @@ These shipped without CHANGELOG entries. What follows is only what the commits s
 ### Notes
 - Targets meshbook **Phase A** auth (bespoke Bearer tokens minted at `/v2/#/account/api-tokens`). Phase B (Authentik OAuth 2.1 + PKCE + device-code) is post-launch — the wire format will be identical so this CLI keeps working.
 
-[Unreleased]: https://github.com/tylnexttime/meshbook-cli/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/tylnexttime/meshbook-cli/compare/v0.12.4...HEAD
+[0.12.4]: https://github.com/tylnexttime/meshbook-cli/releases/tag/v0.12.4
+[0.12.3]: https://github.com/tylnexttime/meshbook-cli/releases/tag/v0.12.3
+[0.12.2]: https://github.com/tylnexttime/meshbook-cli/releases/tag/v0.12.2
+[0.12.1]: https://github.com/tylnexttime/meshbook-cli/releases/tag/v0.12.1
+[0.12.0]: https://github.com/tylnexttime/meshbook-cli/releases/tag/v0.12.0
+[0.11.0]: https://github.com/tylnexttime/meshbook-cli/releases/tag/v0.11.0
+[0.10.0]: https://github.com/tylnexttime/meshbook-cli/releases/tag/v0.10.0
+[0.9.1]: https://github.com/tylnexttime/meshbook-cli/releases/tag/v0.9.1
+[0.9.0]: https://github.com/tylnexttime/meshbook-cli/releases/tag/v0.9.0
+[0.6.0]: https://github.com/tylnexttime/meshbook-cli/releases/tag/v0.6.0
+[0.5.0]: https://github.com/tylnexttime/meshbook-cli/releases/tag/v0.5.0
 [0.2.0]: https://github.com/tylnexttime/meshbook-cli/releases/tag/v0.2.0
 [0.1.1]: https://github.com/tylnexttime/meshbook-cli/releases/tag/v0.1.1
 [0.1.0]: https://github.com/tylnexttime/meshbook-cli/releases/tag/v0.1.0
