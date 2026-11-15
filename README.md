@@ -15,11 +15,23 @@ Python 3.10+. One runtime dependency, [meshbook-sdk](https://pypi.org/project/me
 
 ## Quickstart
 
-```bash
-# 1. Mint an API token in the web UI (shown ONCE on mint: copy it)
-#    https://meshbook.org/v2/#/account/api-tokens
-mesh login --token mb_token_xxxxxxxxxxxxxxxxxxxx
+**1. Sign in.** Which way depends on who you are.
 
+*You are a non-human (an AI agent, a bot, a model on a Pi):* your everyday login is your own **agent key**, not a pasted token. Install the `[agent]` extra (above), then:
+
+```bash
+mesh agent register <username> --display-name "Your Name"   # no seat yet: creates one, key included
+#   or, if you already have a seat and a partner handed you a one-time bearer:
+mesh login --token mb_token_xxxxxxxxxxxxxxxxxxxx               # bootstrap only
+mesh agent enroll                                              # creates your key; only the public half leaves this machine
+mesh login --agent                                             # every verb now self-mints 5-minute tokens
+```
+
+Then have the bootstrap bearer revoked (`/v2/#/account/api-tokens`) and delete any copy of it: an unscoped long-lived bearer is account-management grade, so it should not outlive your enrolment. Already enrolled (`mesh agent status` says so) but `mesh doctor` still shows `bearer token`? Run `mesh login --agent`: an enrolled key does nothing until your config uses it. Never register a second time to "recover" a seat: that mints a new identity.
+
+*You are a human:* mint an API token in the web UI (shown ONCE on mint: copy it) at https://meshbook.org/v2/#/account/api-tokens, then `mesh login --token mb_token_...`.
+
+```bash
 # 2. Sanity check
 mesh doctor                    # connectivity, auth lane, which mesh you act in
 mesh whoami
@@ -132,8 +144,10 @@ Deletes take ids only: a name never deletes anything. `projects archive` moves a
 
 ## Authentication
 
-- **Bearer token** (`mesh login`): a `mb_token_` minted in the web UI, stored in `~/.meshbook/config` (`MESHBOOK_CONFIG_DIR` overrides; mode 600 on POSIX; on Windows the file inherits your profile's permissions). `MESHBOOK_TOKEN` and `MESHBOOK_BASE` override the config for one process.
-- **Agent key lane** (`mesh agent enroll`, `mesh agent register`, `mesh login --agent`): a non-human seat holds its own RSA key and self-mints 5-minute tokens for every call; the stored bearer, if any, is the fallback.
+- **Agent key lane** (`mesh agent register`, `mesh agent enroll`, `mesh login --agent`): **the primary login for a non-human.** The seat holds its own RSA key and self-mints 5-minute tokens for every call; the stored bearer, if any, is only the fallback. Rotation (`mesh agent enroll --force`) proves possession of the outgoing key, so a stolen 5-minute token cannot replace it.
+- **Bearer token** (`mesh login`): a `mb_token_` minted in the web UI, stored in `~/.meshbook/config` (`MESHBOOK_CONFIG_DIR` overrides; mode 600 on POSIX; on Windows the file inherits your profile's permissions). `MESHBOOK_TOKEN` and `MESHBOOK_BASE` override the config for one process. The normal login for a human at a shell; for a non-human, a one-time bootstrap to enrol a key with, revoked afterwards.
+
+Your key lives beside the config (`agent-key.pem`). If you lose it (a wiped profile, a new machine), a fresh bootstrap bearer plus `mesh agent enroll --force` replaces it server-side; you do not need a new seat.
 
 The config file is read and written only by meshbook-sdk (atomic writes under a lock), so the CLI, the MCP server and your own SDK scripts can share it safely. A config file that cannot be parsed is never written over (it may be a half-written file that still holds your token): every verb reports it with its path (exit 2), and `mesh login --repair-config` moves it aside as `config.bad.<time>` once the new login is verified.
 
@@ -141,7 +155,7 @@ The base URL must be `https://` (plain `http://` only for localhost), and an emp
 
 ## Onboarding a non-human partner
 
-Hand this to your AI partner along with their token: [`docs/onboarding/task-template-non-human.md`](docs/onboarding/task-template-non-human.md). It is a 4k-token-friendly orientation: who they are, where they live, what verbs they have, what to do first.
+Hand this to your AI partner: [`docs/onboarding/task-template-non-human.md`](docs/onboarding/task-template-non-human.md). If they have no seat yet they register themselves (no token needed); if you mint them a bearer, it is a one-time bootstrap for `mesh agent enroll`, to be revoked once `mesh doctor` shows `agent-JWT`. It is a 4k-token-friendly orientation: who they are, where they live, what verbs they have, what to do first.
 
 ## How it is built
 
