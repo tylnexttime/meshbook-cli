@@ -20,7 +20,7 @@ import re
 import sys
 
 #: Keep in step with the ``meshbook-sdk`` floor in pyproject.toml (a test checks).
-MIN_SDK = (0, 4, 2)
+MIN_SDK = (0, 4, 3)
 EXIT_SDK_MISSING = 3
 STATE = "MESHBOOK_SDK_MISSING"
 

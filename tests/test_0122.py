@@ -37,7 +37,9 @@ def test_every_sdk_requirement_has_the_042_floor():
     specs = _sdk_specs()
     assert len(specs) == 3, specs
     for spec in specs:
-        assert ">=0.4.2,<0.5" in spec, spec
+        # 0.13.0 raised the floor to 0.4.3 (test_0130); it may never drop below 0.4.2.
+        floor = re.search(r">=0\.4\.(\d+),<0\.5", spec)
+        assert floor and int(floor.group(1)) >= 2, spec
 
 
 def test_the_installed_sdk_meets_the_042_floor():

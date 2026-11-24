@@ -38,9 +38,11 @@ requires-python = ">=3.10"
 # (SDK critique C-03), 0.4.1 added the overwrite= / before= the CLI's
 # --overwrite / --before need, and 0.4.2 added what 0.12.2 is built on: the
 # recurrence tzid (a series keeps its wall clock across DST), the
-# server_too_old hint and recover_pending() / discard_pending().
+# server_too_old hint and recover_pending() / discard_pending(). 0.13.0
+# raises it to 0.4.3: the notification write verbs (mark_read, mark_unread,
+# dismiss, read_all, summary) and notification_is_read() are 0.4.3 surface.
 dependencies = [
-    "meshbook-sdk>=0.4.2,<0.5",
+    "meshbook-sdk>=0.4.3,<0.5",
     # Windows ships no IANA zone database, so without this `--tz Area/City`
     # failed and recurring events expanded on UTC. Pure data, Windows only.
     "tzdata; sys_platform == 'win32'",
@@ -60,12 +62,12 @@ mesh = "mesh.cli:main"
 # `mesh agent ...` (the non-human key lane) needs RSA signing, which the SDK
 # keeps optional. `pip install "meshbook-cli[agent]"` pulls it in.
 agent = [
-    "meshbook-sdk[agent]>=0.4.2,<0.5",
+    "meshbook-sdk[agent]>=0.4.3,<0.5",
 ]
 # Linters pinned to a MINOR range, like the SDK: an unpinned ruff release can
 # turn CI red with no code change (SURVEY 2026-10-19 §3). Bump deliberately.
 dev = [
-    "meshbook-sdk[agent]>=0.4.2,<0.5",
+    "meshbook-sdk[agent]>=0.4.3,<0.5",
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.17,<0.18",

@@ -41,7 +41,7 @@ def test_too_old_sdk_is_named_too():
     fake = "import types; m = types.ModuleType('meshbook'); m.VERSION = '0.3.0'; sys.modules['meshbook'] = m"
     r = _run(fake, "whoami")
     assert r.returncode == 3
-    assert "MESHBOOK_SDK_MISSING: the meshbook SDK here is 0.3.0, older than the 0.4.2" in r.stderr
+    assert "MESHBOOK_SDK_MISSING: the meshbook SDK here is 0.3.0, older than the 0.4.3" in r.stderr
 
 
 def test_healthy_sdk_passes_silently():
