@@ -89,7 +89,12 @@ class CliError(Exception):
 
 #: Exit codes. 1 = the server (or the network) said no; 2 = nothing was
 #: sent because something local is missing or wrong (not signed in, no mesh,
-#: bad arguments); 3 = an optional dependency is not installed.
+#: bad arguments); 3 = an optional dependency is not installed; 4 (0.13.0,
+#: the notification write verbs) = the server was asked, but not every id is
+#: confirmed in the requested state (critique C-06: 2 already means "nothing
+#: was sent", so a partial or unconfirmed write must not reuse it).
+EXIT_NOT_ALL_CONFIRMED = 4
+
 EXIT_CODES = {
     "not_authenticated": 2,
     "no_active_mesh": 2,
@@ -111,6 +116,10 @@ EXIT_CODES = {
     "insecure_base": 2,
     "file_exists": 2,
     "unsafe_path": 2,
+    # 0.13.0: a notification write the server answered, with at least one id
+    # not confirmed (unconfirmed, maybe_applied, not_found, not_in_mesh,
+    # error, not_attempted). Raised by the CLI itself, never by the SDK.
+    "not_all_confirmed": EXIT_NOT_ALL_CONFIRMED,
 }
 
 HINTS = {
@@ -246,6 +255,12 @@ HINT_TEXT = {
         "apex host (plain http only for localhost)."
     ),
     "install_agent_extra": HINTS["missing_dependency"],
+    # SDK 0.4.3: dismiss() without confirm=True (nothing sent).
+    "confirm_irreversible": (
+        "Pass --yes to dismiss for good. To record that you handled a notification, use:  "
+        "mesh notifications mark-read ID  (the web page's x button marks read; it does not "
+        "dismiss)."
+    ),
     # SDK 0.4.2: a registry route answered with FastAPI's own 404/405, i.e.
     # the server does not have the route yet. 0.12.1 text-matched "Not Found".
     "server_too_old": (
@@ -273,6 +288,9 @@ def cli_message(err: MeshbookError | CliError) -> str:
     if hint == "resolve_pending_key":
         return ("An earlier `mesh agent enroll` / `register` left an unconfirmed agent key "
                 "(the server may already be using it).")
+    if hint == "confirm_irreversible":
+        return ("dismiss hides notifications from this account's inbox permanently; no "
+                "command undoes it. Nothing was sent.")
     if hint == "use_before_cursor":
         return "--offset is not supported here: the server ignores it."
     return err.message
@@ -616,6 +634,9 @@ def need_uuid(value: str, what: str) -> str:
 __all__ = [
     "AGENT_INSTALL",
     "KID_PREFIX",
+    "EXIT_CODES",
+    "EXIT_NOT_ALL_CONFIRMED",
+    "HINT_TEXT",
     "CliError",
     "Ctx",
     "clip",

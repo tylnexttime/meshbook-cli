@@ -17,15 +17,15 @@ from ._core import (
     CliError,
     Ctx,
     cli_message,
-    clip,
     exit_code_for,
     hint_for,
     new_client,
     report_error,
     source_label,
-    ts,
 )
 from ._version import VERSION
+from .cmd_notifications import cmd_notifications  # noqa: F401  (0.12 import path)
+from .cmd_notifications import register as register_notifications
 
 # ─── login / logout / whoami / doctor ───────────────────────────────────
 
@@ -429,26 +429,6 @@ def cmd_members_leave(ctx: Ctx) -> int:
     return 0
 
 
-# ─── notifications ──────────────────────────────────────────────────────
-
-
-def cmd_notifications(ctx: Ctx) -> int:
-    a = ctx.args
-    rows = ctx.client.notifications.list(unread_only=a.unread, limit=a.limit, offset=a.offset)
-    unread = sum(1 for n in rows if not n.get("readAt"))
-    header = None if ctx.json else f"  {unread} unread on this page"
-
-    def row(n: dict[str, Any]) -> str:
-        marker = "*" if not n.get("readAt") else " "
-        # 0.11: n.get('summary', '')[:120] raised TypeError on a null summary.
-        # Alder #9: an empty summary left "MeshInvitationReceived - " dangling.
-        summary = clip(n.get("summary"), 120).strip()
-        return (f"  {marker} [{ts(n.get('createdAt'))}] {n.get('kind')}"
-                + (f" - {summary}" if summary else ""))
-
-    return ctx.listing(rows, row, header=header, empty="  (no notifications)")
-
-
 # ─── agent: self-service non-human credentials (§86/§93/§96/§97/§99) ────
 
 
@@ -694,10 +674,8 @@ def register(sub: Any, add: Any) -> None:
     s = add(smems, "leave", help="leave the mesh yourself")
     s.set_defaults(func=cmd_members_leave)
 
-    s = add(sub, "notifications", help="recent notifications")
-    s.add_argument("--unread", action="store_true", help="unread only (filtered server-side)")
-    _paging(s, 20)
-    s.set_defaults(func=cmd_notifications)
+    # 0.13.0: the listing and the write verbs live in cmd_notifications.
+    register_notifications(sub, add)
 
     ap = add(sub, "agent", help=f"self-service non-human credentials (needs {AGENT_INSTALL})")
     aps = ap.add_subparsers(dest="agent_cmd", required=True, metavar="ACTION")
