@@ -45,6 +45,15 @@ def test_the_cli_docstring_states_the_same_floor():
     assert "meshbook-sdk (>=0.4.3,<0.5)" in text
 
 
+def test_the_changelog_carries_a_rollback_pin_and_the_readme_exit_4():
+    log = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    sec = re.search(r"^## \[0\.13\.0\].*?(?=^## \[)", log, re.M | re.S)
+    assert sec and "meshbook-cli==0.12.4" in sec.group(0)
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "`4` (the notification write verbs" in readme
+    assert "| `4` | the server was asked" in readme
+
+
 def test_the_installed_sdk_meets_the_043_floor():
     major, minor, patch = (int(x) for x in version("meshbook-sdk").split(".")[:3])
     assert (major, minor) == (0, 4) and patch >= 3

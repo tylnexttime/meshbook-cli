@@ -4,6 +4,64 @@ All notable changes to `meshbook-cli` are documented here. The format follows [K
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-11-24
+
+The notification write verbs (meshbook DEV-DEBT §106). Built on
+meshbook-sdk 0.4.3. Additive: the bare `mesh notifications` listing, its
+flags and its `--json` envelope are byte-identical to 0.12.4.
+
+**Rollback:** `pip install "meshbook-cli==0.12.4"` (it runs on meshbook-sdk
+0.4.2 or 0.4.3). Publish meshbook-sdk 0.4.3 first: this release cannot
+install without it.
+
+### Added
+
+- **`mesh notifications mark-read ID...` / `mark-unread ID...`**: WRITE this
+  account's own read state (every bench, listener and web session signed in
+  as you sees it; nobody else's inbox changes). Each id is found first, then
+  written under the mesh it was found through, and counts as `applied` only
+  with evidence: the server echoing the row, or a re-read showing it. The
+  production server answers `updated: true` whether or not a row matched;
+  that answer is never believed.
+- **`mesh notifications dismiss ID... --yes`**: hides notifications
+  permanently. No command un-dismisses. Without `--yes` nothing is sent
+  (exit 2, hint `confirm_irreversible`). It is not the web page's x button,
+  which marks read; `--help` says so.
+- **`mesh notifications mark-all-read`**: a dry run by default, listing
+  exactly the unread rows it would mark; `--yes` applies, one confirmed write
+  per row (never the server's blanket `POST /read-all`, which marks rows you
+  have not seen and ignores an unknown group). Filters: `--group`, `--kind`
+  (repeatable), `--older-than 90m|12h|7d|2w|TIME`, `--cross-mesh-only`,
+  `--exclude-cross-mesh`. Needs a mesh unless `--cross-mesh-only`.
+- **`mesh notifications summary [--all-meshes]`**: unread counts per tab,
+  with `unreadInMesh`; `--all-meshes` counts cross-mesh rows once instead of
+  once per mesh.
+- **`mesh notifications --ids`**: adds each row's id to the human listing
+  (opt-in, so the bare line is unchanged for scripts that grep it).
+- **Exit code 4** (`not_all_confirmed`): the server was asked, but not every
+  id is confirmed in the requested state (`unconfirmed`, `maybe_applied`,
+  `not_found`, `not_in_mesh`, `error`, `not_attempted`). 2 still means
+  "nothing was sent, something local is wrong", and 1 "the server or network
+  refused the call outright". stdout always carries every id's result.
+- Output: one line per id (status, id, kind, title, and the mesh the write
+  went under, never the ambient mesh). Under `--json`, meshbook-sdk's result
+  verbatim plus a `summary` object.
+- `--mesh` on a write verb is strict: a row not visible in that mesh is
+  `not_in_mesh` and no other mesh is tried. Without it, the current mesh is
+  searched first, then your other meshes.
+
+### Changed
+
+- **The unread marker and the "N unread on this page" count read `isRead`**,
+  falling back to `readAt` only when `isRead` is absent (meshbook-sdk's
+  `notification_is_read`). The server keeps `readAt` on a row marked unread,
+  so 0.12 showed such a row as read. Output is unchanged for every row where
+  the two agree.
+- **Depends on `meshbook-sdk>=0.4.3,<0.5`** (runtime, `[agent]`, `[dev]`, and
+  the preflight's floor).
+- The listing moved from `mesh/cmd_account.py` to `mesh/cmd_notifications.py`;
+  `mesh.cmd_account.cmd_notifications` still imports.
+
 ## [0.12.4] — 2026-10-22
 
 Two guards against an environment that disagrees with the code it runs.

@@ -75,13 +75,55 @@ Created task: Ship 0.12 (bbbbbbbb-...)
 - legacy keys: `members list --json` still carries `members`, the 0.12.1 name for `items` (the same list). The `members` key is **deprecated and will be removed in 0.13.0**; read `.items`. It is the only legacy key left in any listing (checked for 0.12.3);
 - errors on **stderr** as `{"ok": false, "error": {"code", "message", "hint", "status", "hintCode"}}`. `hint` is advice for a person; `hintCode` is meshbook-sdk's stable machine hint (`allow_overwrite`, `use_before_cursor`, `check_before_retry`, `fix_config`, `server_too_old` ...), the field to branch on in a script. `status` is the HTTP status, or `null` when there was no HTTP answer (a usage error, a local refusal, a network failure). `message` wording may change between releases.
 
-Exit codes: `0` ok, `1` the server (or network) refused, `2` nothing was sent because something local is missing or wrong (not signed in, no mesh, bad flags), `3` an optional dependency is missing (`pip install "meshbook-cli[agent]"`).
+Exit codes: `0` ok, `1` the server (or network) refused, `2` nothing was sent because something local is missing or wrong (not signed in, no mesh, bad flags), `3` an optional dependency is missing (`pip install "meshbook-cli[agent]"`), `4` (the notification write verbs, since 0.13.0) the server was asked but not every id is confirmed in the requested state; stdout still carries every id's result, and stderr carries `not_all_confirmed`.
 
 Human listings end with `N of TOTAL` and, when there is more, the flag to pass next. Most listings take `--limit` and `--offset`. The chat routes page by time instead, because the server ignores an offset there: `chat list`, `channels read` and `dm read` take `--before TIME` (their footer prints the exact value for the next page), and `chat search` takes only `--limit` (best matches first). `--offset` on those four is refused (exit 2) rather than silently returning the first page again.
 
 Downloads (`chat download`, `file download`) never replace an existing file unless you pass `--overwrite`, and the server's file name is reduced to one safe name inside the `--out` directory (a hostile `../../.bashrc` cannot land anywhere else).
 
 Output is UTF-8 even when piped on Windows (`mesh chat list | findstr x` no longer crashes on an emoji).
+
+## Notifications: your own inbox, read and write
+
+`mesh notifications` lists (unchanged since 0.12; `--ids` adds each row's id, `--json` always has it). Since 0.13.0 it also writes. Every write verb changes **only this account's own notification state**: every bench, listener and web session signed in as you sees the change, and nobody else's inbox changes.
+
+```bash
+mesh notifications --unread --ids                 # find the ids
+mesh notifications mark-read ID [ID...]           # WRITE: mark read ("I handled it")
+mesh notifications mark-unread ID [ID...]         # WRITE: mark unread again
+mesh notifications dismiss ID [ID...] --yes       # WRITE, PERMANENT: hide for good
+mesh notifications mark-all-read                  # a DRY RUN: lists what it would mark
+mesh notifications mark-all-read --yes --older-than 7d --exclude-cross-mesh
+mesh notifications summary                        # unread counts, this mesh + cross-mesh
+mesh notifications summary --all-meshes           # every mesh, cross-mesh rows counted once
+```
+
+- **Ids** are full UUIDs, checked before anything is sent (a truncated id is exit 2, not a server error). Up to 200 per call; duplicates are dropped.
+- **Mesh.** With `--mesh`, only that mesh is searched, and a row not visible there is `not_in_mesh` (nothing is sent). Without it, your current mesh is searched first, then each of your other meshes. Each row is written under the mesh it was found through, and that mesh is what the output prints, never the ambient one.
+- **Proof, not hope.** The server in production answers `updated: true` whether or not a row matched. The CLI (through meshbook-sdk 0.4.3) never believes that: a row counts as `applied` only when the server echoes it in the new state or a re-read shows it.
+- **`dismiss`** is permanent: no command un-dismisses, and the row vanishes from every listing, count and client. It needs `--yes` (without it, exit 2 and nothing is sent). It is **not** the web page's x button, which marks read. To record that you handled something, use `mark-read`.
+- **`mark-all-read`** is a dry run unless you pass `--yes`. It lists the unread rows that match (`--group mentions|invites|assignments|mesh|system`, `--kind K` repeatable, `--older-than 90m|12h|7d|2w|TIME`) and marks them one confirmed write per row, at most 200 per call. It needs a mesh unless `--cross-mesh-only`. Cross-mesh rows (invitations, announcements, storage warnings) show in every mesh, so by default the first mesh clears them; pass `--exclude-cross-mesh` when looping over meshes. `--yes` lists again before marking, so a row that arrived after your dry run is included: to mark exactly the rows you reviewed, pass their ids to `mark-read`.
+- **`summary`** counts one mesh plus the cross-mesh rows, and adds `unreadInMesh`. Do not add `unread` up over several meshes (each cross-mesh row would count once per mesh): use `--all-meshes`.
+
+Output: one line per id with its status, id, kind, title and mesh. Under `--json`, meshbook-sdk's result verbatim (`action`, `ok`, `counts`, `results` with one record per id, `server`, `searched`) plus a `summary` object (`verb`, `requested`, `settled`, `sent`, `counts`, `allConfirmed`, `exitCode`); `mark-all-read` prints the SDK's `read_all` result (`dry_run`, `ids`, `rows`, `outcome`, ...) plus `summary`. Branch on each record's `status` and `sent`, never on `message`.
+
+| Status | Meaning |
+|---|---|
+| `applied` | now in the requested state, with evidence |
+| `already` | was already in that state; nothing sent |
+| `not_found` | not visible in any mesh searched (dismissed, not yours, never existed) |
+| `not_in_mesh` | you named a mesh and the row is not visible there; nothing sent |
+| `unconfirmed` | the answer proved nothing and a re-read did not show the change |
+| `maybe_applied` | the answer was lost; check before retrying |
+| `not_attempted` | an earlier id hit an error that would fail every id |
+| `error` | the server refused this id (see `code`) |
+
+| Exit | Meaning (write verbs) |
+|---|---|
+| `0` | every id `applied` or `already` |
+| `1` | the server or network refused the call outright; nothing was marked |
+| `2` | refused locally, nothing sent (bad id, `dismiss` without `--yes`, no mesh, bad flag) |
+| `4` | the server was asked, but not every id is confirmed (any other status) |
 
 ## Times and the calendar
 
@@ -113,7 +155,10 @@ mesh logout   mesh whoami   mesh doctor
 mesh meshes [list] | use NAME                                     (no action = list)
 mesh members list | invite USER [--role] | pending | accept MESH [--decline]
              | set-role USER ROLE | remove USER | leave
-mesh notifications [--unread]
+mesh notifications [--unread] [--ids] | summary [--all-meshes]       (no action = list)
+             | mark-read ID... | mark-unread ID... | dismiss ID... --yes
+             | mark-all-read [--yes] [--group G] [--kind K] [--older-than AGE|TIME]
+                             [--cross-mesh-only | --exclude-cross-mesh]
 
 mesh contacts list [--search] | show REF | create --first ... | update REF ... | delete ID
          (--phone --title --role/--job-title --notes --tags a,b --email --last)
