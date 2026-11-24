@@ -14,6 +14,10 @@ flags and its `--json` envelope are byte-identical to 0.12.4.
 0.4.2 or 0.4.3). Publish meshbook-sdk 0.4.3 first: this release cannot
 install without it.
 
+**Deferred:** the deprecated `members` key on `members list --json`, announced
+in 0.12.3 for removal in 0.13.0, is still present. Its removal moves to 0.14.0
+so that this release stays additive.
+
 ### Added
 
 - **`mesh notifications mark-read ID...` / `mark-unread ID...`**: WRITE this
